@@ -1,0 +1,142 @@
+{
+ "batchcomplete": true,
+ "query": {
+  "pages": [
+   {
+    "pageid": 1,
+    "ns": 6,
+    "title": "File:Burlington waterfront at sunset.jpg",
+    "imageinfo": [
+     {
+      "width": 4000,
+      "height": 2667,
+      "mime": "image/jpeg",
+      "thumburl": "https://upload.wikimedia.org/a/1920px-a.jpg",
+      "url": "https://upload.wikimedia.org/a.jpg",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:a.jpg",
+      "extmetadata": {
+       "LicenseShortName": {
+        "value": "CC BY-SA 4.0"
+       },
+       "Artist": {
+        "value": "<a href=\"//commons.wikimedia.org/wiki/User:Jane\">Jane&#32;Doe</a>"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "pageid": 2,
+    "ns": 6,
+    "title": "File:Map of Burlington.jpg",
+    "imageinfo": [
+     {
+      "width": 3000,
+      "height": 2000,
+      "mime": "image/jpeg",
+      "url": "u",
+      "extmetadata": {
+       "LicenseShortName": {
+        "value": "CC BY 3.0"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "pageid": 3,
+    "ns": 6,
+    "title": "File:Church Street.jpg",
+    "imageinfo": [
+     {
+      "width": 3000,
+      "height": 2000,
+      "mime": "image/jpeg",
+      "url": "u",
+      "extmetadata": {
+       "LicenseShortName": {
+        "value": "CC BY-NC 2.0"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "pageid": 4,
+    "ns": 6,
+    "title": "File:Tall tower.jpg",
+    "imageinfo": [
+     {
+      "width": 2000,
+      "height": 3000,
+      "mime": "image/jpeg",
+      "url": "u",
+      "extmetadata": {
+       "LicenseShortName": {
+        "value": "CC0"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "pageid": 5,
+    "ns": 6,
+    "title": "File:Lake Champlain view.jpg",
+    "imageinfo": [
+     {
+      "width": 2400,
+      "height": 1600,
+      "mime": "image/jpeg",
+      "url": "https://upload.wikimedia.org/b.jpg",
+      "extmetadata": {
+       "LicenseShortName": {
+        "value": "Public domain"
+       },
+       "Artist": {
+        "value": "Unknown"
+       }
+      },
+      "thumburl": "https://upload.wikimedia.org/b/1920px-b.jpg"
+     }
+    ]
+   },
+   {
+    "pageid": 6,
+    "ns": 6,
+    "title": "File:Small thumbnail.jpg",
+    "imageinfo": [
+     {
+      "width": 800,
+      "height": 500,
+      "mime": "image/jpeg",
+      "url": "u",
+      "extmetadata": {
+       "LicenseShortName": {
+        "value": "CC BY 4.0"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "pageid": 7,
+    "ns": 6,
+    "title": "File:Downtown skyline.png",
+    "imageinfo": [
+     {
+      "width": 2000,
+      "height": 1200,
+      "mime": "image/png",
+      "url": "https://upload.wikimedia.org/c.png",
+      "extmetadata": {
+       "LicenseShortName": {
+        "value": "CC BY-ND 4.0"
+       }
+      }
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -1,0 +1,176 @@
+{
+  "manifest_version": 2,
+  "name": "Rad Streams",
+  "version": "0.4.20",
+  "description": "Internet radio stations as TV channels: photos of each station's city, the current track and local weather, with the station playing underneath.",
+  "author": "Bob",
+  "capabilities": [
+    "subprocess",
+    "persistent_service",
+    "network_listener"
+  ],
+  "fields": [
+    {
+      "id": "setup_info",
+      "label": "Setup",
+      "type": "info",
+      "description": "Enter your stations below, then press Sync Stations. Each station becomes a channel in the Rad Streams group. Channels render only while someone is watching. Validate checks every stream and city and writes a full report to /data/rad_streams/logs/validate.log."
+    },
+    {
+      "id": "stations",
+      "label": "Stations",
+      "type": "text",
+      "default": "",
+      "help_text": "One station per line: Name | Stream URL | City | Channel # (optional). Example: KEXP | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501. Use 'City, ST' or 'City, Country' when a city name is ambiguous. For photos of a subject instead of a city (no weather), put Theme: and a name in the City column, e.g. Theme: Space. Built in: Space, Earth, Nature, Ocean, Mountains, Forest, Waterfalls, Desert, Aurora, Sunsets, Beaches, Lakes, Wildlife, Night Sky; any other word is searched on Wikimedia Commons. Icecast/Shoutcast, .pls/.m3u and HLS (.m3u8) stream URLs all work. Lines starting with # are ignored. Press Sync Stations after editing."
+    },
+    {
+      "id": "units",
+      "label": "Temperature Units",
+      "type": "select",
+      "default": "F",
+      "options": [
+        {
+          "value": "F",
+          "label": "Fahrenheit (°F, mph)"
+        },
+        {
+          "value": "C",
+          "label": "Celsius (°C, km/h)"
+        }
+      ]
+    },
+    {
+      "id": "resolution",
+      "label": "Resolution",
+      "type": "select",
+      "default": "1920x1080",
+      "options": [
+        {
+          "value": "3840x2160",
+          "label": "3840x2160"
+        },
+        {
+          "value": "2560x1440",
+          "label": "2560x1440"
+        },
+        {
+          "value": "1920x1080",
+          "label": "1920x1080"
+        },
+        {
+          "value": "1280x720",
+          "label": "1280x720"
+        },
+        {
+          "value": "854x480",
+          "label": "854x480"
+        }
+      ]
+    },
+    {
+      "id": "video_kbps",
+      "label": "Video Bitrate (kbps)",
+      "type": "number",
+      "default": 3000,
+      "min": 500,
+      "max": 20000,
+      "step": 100,
+      "help_text": "Upper limit per station. Mostly-still pictures usually use less."
+    },
+    {
+      "id": "text_pattern",
+      "label": "Text Movement",
+      "type": "select",
+      "default": "cycle",
+      "options": [
+        {
+          "value": "cycle",
+          "label": "Cycle through 8 positions"
+        },
+        {
+          "value": "random",
+          "label": "Random position each photo"
+        },
+        {
+          "value": "corners",
+          "label": "Corners only"
+        }
+      ],
+      "help_text": "Burn-in protection: the text moves to a new spot on every photo change."
+    },
+    {
+      "id": "credit_mode",
+      "label": "Photo Credits",
+      "type": "select",
+      "default": "brief",
+      "options": [
+        {
+          "value": "brief",
+          "label": "Show for 5 seconds per photo"
+        },
+        {
+          "value": "always",
+          "label": "Always show"
+        }
+      ],
+      "help_text": "Photo and weather licences require a credit; brief shows it when each photo appears, then fades it out."
+    },
+    {
+      "id": "port",
+      "label": "Server Port",
+      "type": "number",
+      "default": 5980,
+      "min": 1024,
+      "max": 65535,
+      "step": 1,
+      "help_text": "Local port for the channel streams (127.0.0.1 only). Change it if something else uses it."
+    }
+  ],
+  "actions": [
+    {
+      "id": "sync",
+      "label": "Sync Stations",
+      "button_label": "Sync",
+      "button_color": "green",
+      "description": "Create, update and remove channels to match the station list, and start the stream server."
+    },
+    {
+      "id": "validate",
+      "label": "Validate",
+      "button_label": "Validate",
+      "button_color": "blue",
+      "description": "Check each stream, its track titles, the city and available photos."
+    },
+    {
+      "id": "status",
+      "label": "Status",
+      "button_label": "Status",
+      "button_color": "gray",
+      "description": "Show whether the stream server is running and which stations are being watched."
+    },
+    {
+      "id": "stop_server",
+      "label": "Stop Server",
+      "button_label": "Stop",
+      "button_color": "yellow",
+      "description": "Stop the stream server. Channels stay; Sync starts it again.",
+      "confirm": {
+        "required": true,
+        "title": "Stop Rad Streams?",
+        "message": "Anyone watching a Rad Streams channel will be disconnected."
+      }
+    },
+    {
+      "id": "remove_channels",
+      "label": "Remove All Channels",
+      "button_label": "Remove",
+      "button_color": "red",
+      "description": "Stop the server and delete every channel this plugin created.",
+      "confirm": {
+        "required": true,
+        "title": "Remove Rad Streams channels?",
+        "message": "This deletes every channel and stream in the Rad Streams group that this plugin created."
+      }
+    }
+  ]
+}

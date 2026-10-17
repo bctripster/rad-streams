@@ -1,0 +1,5 @@
+{"results": [
+ {"id": 5746545, "name": "Portland", "latitude": 45.52345, "longitude": -122.67621, "country_code": "US", "admin1": "Oregon", "admin2": "Multnomah", "timezone": "America/Los_Angeles", "population": 652503, "country": "United States"},
+ {"id": 4975802, "name": "Portland", "latitude": 43.66147, "longitude": -70.25533, "country_code": "US", "admin1": "Maine", "admin2": "Cumberland", "timezone": "America/New_York", "population": 66881, "country": "United States"},
+ {"id": 2152668, "name": "Portland", "latitude": -38.34618, "longitude": 141.60426, "country_code": "AU", "admin1": "Victoria", "timezone": "Australia/Melbourne", "population": 9712, "country": "Australia"}
+]}

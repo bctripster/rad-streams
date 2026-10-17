@@ -1,0 +1,5 @@
+{"latitude": 44.48, "longitude": -73.21, "utc_offset_seconds": -14400, "timezone": "America/New_York",
+ "current_units": {"temperature_2m": "°F"},
+ "current": {"time": "2026-10-12T15:45", "interval": 900, "temperature_2m": 54.3, "apparent_temperature": 51.0,
+             "relative_humidity_2m": 62, "weather_code": 2, "wind_speed_10m": 8.1, "is_day": 1},
+ "daily": {"time": ["2026-10-12"], "temperature_2m_max": [61.2], "temperature_2m_min": [46.6]}}
