@@ -140,6 +140,10 @@ Dispatcharr's channel models.
 - `rs/themes.py`: theme channels (`Theme: Space`) and their searches
 - `rs/encoder.py`: ffmpeg encoder process
 
+## License
+
+Rad Streams is licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later), the same licence as Dispatcharr. See `LICENSE`. The Inter font keeps its own licence, listed under Credits.
+
 ## Credits
 
 Inter font: SIL Open Font License 1.1 (`assets/fonts/Inter-LICENSE.txt`).
