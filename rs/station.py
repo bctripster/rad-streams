@@ -53,7 +53,8 @@ class StationRunner:
         self.encoder = Encoder(settings.width, settings.height, render_fps=settings.render_fps,
                                output_fps=settings.output_fps, video_kbps=settings.video_kbps,
                                audio_kbps=settings.audio_kbps, output=output, ffmpeg=ffmpeg,
-                               smooth=smooth, log_path=log_path)
+                               smooth=smooth, log_path=log_path,
+                               video_encoder=settings.video_encoder)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._photos: list[Photo] = []

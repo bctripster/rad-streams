@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Rad Streams",
-  "version": "0.4.20",
+  "version": "0.5.0",
   "description": "Internet radio stations as TV channels: photos of each station's city, the current track and local weather, with the station playing underneath.",
   "author": "Bob",
   "capabilities": [
@@ -21,7 +21,7 @@
       "label": "Stations",
       "type": "text",
       "default": "",
-      "help_text": "One station per line: Name | Stream URL | City | Channel # (optional). Example: KEXP | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501. Use 'City, ST' or 'City, Country' when a city name is ambiguous. For photos of a subject instead of a city (no weather), put Theme: and a name in the City column, e.g. Theme: Space. Built in: Space, Earth, Nature, Ocean, Mountains, Forest, Waterfalls, Desert, Aurora, Sunsets, Beaches, Lakes, Wildlife, Night Sky; any other word is searched on Wikimedia Commons. Icecast/Shoutcast, .pls/.m3u and HLS (.m3u8) stream URLs all work. Lines starting with # are ignored. Press Sync Stations after editing."
+      "help_text": "One station per line: Name | Stream URL | City | Channel # (optional). Example: KEXP | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501. Use 'City, ST' or 'City, Country' when a city name is ambiguous. For photos of a subject instead of a city (no weather), put Theme: and a name in the City column, e.g. Theme: Space. Built in: Space, Earth, Nature, Ocean, Mountains, Forest, Waterfalls, Desert, Aurora, Sunsets, Beaches, Lakes, Wildlife, Night Sky; any other word is searched on Wikimedia Commons. Icecast/Shoutcast, .pls/.m3u and HLS (.m3u8) stream URLs all work. Optional extra columns: id=<old name> keeps a station's channel when you rename it, and logo=<image URL> sets its channel logo (default: the Rad Streams logo). Example: KEXP Seattle | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501 | id=KEXP. Lines starting with # are ignored. Press Sync Stations after editing."
     },
     {
       "id": "units",
@@ -114,6 +114,31 @@
         }
       ],
       "help_text": "Photo and weather licences require a credit; brief shows it when each photo appears, then fades it out."
+    },
+    {
+      "id": "video_encoder",
+      "label": "Video Encoding",
+      "type": "select",
+      "default": "software",
+      "options": [
+        {
+          "value": "software",
+          "label": "Software (CPU)"
+        },
+        {
+          "value": "vaapi",
+          "label": "VAAPI (Intel or AMD GPU)"
+        },
+        {
+          "value": "qsv",
+          "label": "Intel Quick Sync"
+        },
+        {
+          "value": "nvenc",
+          "label": "NVIDIA NVENC"
+        }
+      ],
+      "help_text": "A GPU takes the video encoding off the CPU. The container needs the GPU passed through (/dev/dri, or the NVIDIA runtime). Sync tests it and uses software encoding if it doesn't work."
     },
     {
       "id": "port",
