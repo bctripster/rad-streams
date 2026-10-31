@@ -17,6 +17,7 @@ has the one Sync set last time, so a logo or EPG picked by hand is kept.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -130,6 +131,31 @@ class ChannelSync:
             q = q.exclude(id=exclude_id)
         return q.first()
 
+    # ---- guide ownership -------------------------------------------------
+    def _guide_state_path(self) -> str:
+        return os.path.join(os.path.dirname(self.mapping_path) or ".", "guide.json")
+
+    def _recorded_guide_id(self) -> Optional[int]:
+        data = net.read_json(self._guide_state_path())
+        sid = data.get("source_id") if isinstance(data, dict) else None
+        return sid if isinstance(sid, int) else None
+
+    def _is_our_guide(self, src) -> bool:
+        """True for the EPG source this plugin made.
+
+        Recognised by the id Sync recorded, or (for sources made before the id
+        was recorded) by our marker or our name pattern. Saving the source in
+        Dispatcharr's Dummy EPG form rewrites its settings and drops the marker,
+        so the marker alone isn't enough.
+        """
+        if src is None or src.source_type != "dummy":
+            return False
+        if src.id is not None and src.id == self._recorded_guide_id():
+            return True
+        props = src.custom_properties or {}
+        return (props.get("managed_by") == MANAGED_BY
+                or props.get("title_pattern") == GUIDE_PROPERTIES["title_pattern"])
+
     def _guide(self, res: SyncResult) -> Optional[Any]:
         """The shared EPG entry for every Rad Streams channel, created on first use."""
         if self.m.EPGSource is None or self.m.EPGData is None:
@@ -140,13 +166,15 @@ class ChannelSync:
                 src = self.m.EPGSource.objects.create(
                     name=GUIDE_NAME, source_type="dummy", is_active=True,
                     custom_properties=dict(GUIDE_PROPERTIES))
-            elif (src.source_type != "dummy"
-                  or (src.custom_properties or {}).get("managed_by") != MANAGED_BY):
+            elif not self._is_our_guide(src):
                 # Someone else's source with our name: never touch it.
                 res.warnings.append(f"an EPG source named '{GUIDE_NAME}' already exists and isn't "
-                                    "this plugin's, so guide entries were skipped")
+                                    "this plugin's, so guide entries were skipped. Rename or "
+                                    "delete it under EPG, then Sync again")
                 return None
-            elif src.custom_properties != GUIDE_PROPERTIES:
+            if src.id != self._recorded_guide_id():
+                net.write_json(self._guide_state_path(), {"source_id": src.id})
+            if src.custom_properties != GUIDE_PROPERTIES:
                 src.custom_properties = dict(GUIDE_PROPERTIES)
                 src.save(update_fields=["custom_properties"])
             # Dispatcharr creates the EPG entry for a new dummy source itself;
@@ -341,11 +369,11 @@ class ChannelSync:
             return
         try:
             src = self.m.EPGSource.objects.filter(name=GUIDE_NAME).first()
-            if src is not None and src.source_type == "dummy" and \
-                    (src.custom_properties or {}).get("managed_by") == MANAGED_BY:
+            if self._is_our_guide(src):
                 if self.m.EPGData is not None:
                     for epg in self.m.EPGData.objects.filter(epg_source=src):
                         epg.delete()
                 src.delete()
+                net.write_json(self._guide_state_path(), {})
         except Exception:
             log.exception("could not remove the Rad Streams EPG source")

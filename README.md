@@ -66,7 +66,8 @@ Sync gives every Rad Streams channel a logo and a guide entry, so TV apps show t
 The guide comes from a "Custom Dummy EPG" source called **Rad Streams** that Sync creates: each channel
 shows the station's name with "Live from Seattle, WA" (or "Nature photos" for a theme) in 4-hour blocks.
 Dispatcharr generates these on the fly, so they never run out. If you pick a different logo or EPG for a
-channel by hand, Sync leaves it alone. Remove All Channels also deletes the Rad Streams EPG source.
+channel by hand, Sync leaves it alone. Sync owns the Rad Streams EPG source itself, so changes made to it in
+Dispatcharr's Dummy EPG form are put back at the next Sync. Remove All Channels also deletes the Rad Streams EPG source.
 
 ## Settings
 
