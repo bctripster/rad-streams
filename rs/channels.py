@@ -4,6 +4,15 @@ The ORM models are passed in rather than imported, so this module loads
 outside Dispatcharr (the tests drive it with small in-memory stand-ins).
 Which station owns which channel/stream is remembered in a JSON file next to
 the service config; the stream URL is the fallback when that file is lost.
+
+Guide data: Sync keeps one "Custom Dummy EPG" source called "Rad Streams".
+Dispatcharr generates its programmes on the fly (nothing to refresh or
+expire) by matching a pattern against each channel's stream name, which is
+``Rad Streams: <station> | <about>``. Station names and cities can't contain
+``|`` (it separates the columns), so the split is unambiguous.
+
+Logos and guide data are only set on a channel that has none, or that still
+has the one Sync set last time, so a logo or EPG picked by hand is kept.
 """
 from __future__ import annotations
 
@@ -11,12 +20,32 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from . import net
+from . import net, themes
 from .config import Station
 
 GROUP_NAME = "Rad Streams"
 STREAM_PREFIX = "Rad Streams: "
 AUTO_NUMBER_FROM = 1000
+
+GUIDE_NAME = "Rad Streams"
+GUIDE_TVG_ID = "dummy_rad_streams"
+MANAGED_BY = "rad_streams"
+# Programme length in the guide, in minutes. Radio has no schedule, so the
+# blocks only give guide grids something to draw.
+GUIDE_BLOCK_MINUTES = 240
+GUIDE_PROPERTIES = {
+    "managed_by": MANAGED_BY,
+    "name_source": "stream",
+    "stream_index": 1,
+    "title_pattern": r"^Rad Streams: (?<station>.+) \| (?<about>[^|]+)$",
+    "title_template": "{station}",
+    "subtitle_template": "{about}",
+    "description_template": "{about}. Internet radio with the track that's playing on screen.",
+    "program_duration": GUIDE_BLOCK_MINUTES,
+    "category": "Music",
+    "include_date": False,
+    "timezone": "UTC",
+}
 
 log = logging.getLogger("rad_streams.channels")
 
@@ -28,6 +57,23 @@ class Models:
     ChannelStream: Any
     Stream: Any
     StreamProfile: Any
+    # Optional: left as None where Dispatcharr lacks them, and Sync skips that part.
+    EPGSource: Any = None
+    EPGData: Any = None
+    Logo: Any = None
+
+
+def guide_about(st: Station) -> str:
+    """The guide's subtitle for a station: where it's from, or what it shows."""
+    theme = themes.parse(st.city)
+    if theme is not None:
+        return f"{theme.label} photos"
+    return f"Live from {st.city}"
+
+
+def stream_name(st: Station) -> str:
+    """``Rad Streams: KEXP | Live from Seattle, WA`` (the guide pattern reads this)."""
+    return f"{STREAM_PREFIX}{st.name} | {guide_about(st)}"
 
 
 @dataclass
@@ -48,10 +94,13 @@ class SyncResult:
 
 
 class ChannelSync:
-    def __init__(self, models: Models, mapping_path: str):
+    def __init__(self, models: Models, mapping_path: str, default_logo: Optional[str] = None):
+        """``default_logo`` is a path under /data (or a URL) for channels without ``logo=``."""
         self.m = models
         self.mapping_path = mapping_path
+        self.default_logo = default_logo
         self._profile_id: Optional[int] = None
+        self._logos: dict = {}
 
     # ---- helpers -------------------------------------------------------
     def _mapping(self) -> dict:
@@ -81,10 +130,64 @@ class ChannelSync:
             q = q.exclude(id=exclude_id)
         return q.first()
 
+    def _guide(self, res: SyncResult) -> Optional[Any]:
+        """The shared EPG entry for every Rad Streams channel, created on first use."""
+        if self.m.EPGSource is None or self.m.EPGData is None:
+            return None
+        try:
+            src = self.m.EPGSource.objects.filter(name=GUIDE_NAME).first()
+            if src is None:
+                src = self.m.EPGSource.objects.create(
+                    name=GUIDE_NAME, source_type="dummy", is_active=True,
+                    custom_properties=dict(GUIDE_PROPERTIES))
+            elif (src.source_type != "dummy"
+                  or (src.custom_properties or {}).get("managed_by") != MANAGED_BY):
+                # Someone else's source with our name: never touch it.
+                res.warnings.append(f"an EPG source named '{GUIDE_NAME}' already exists and isn't "
+                                    "this plugin's, so guide entries were skipped")
+                return None
+            elif src.custom_properties != GUIDE_PROPERTIES:
+                src.custom_properties = dict(GUIDE_PROPERTIES)
+                src.save(update_fields=["custom_properties"])
+            # Dispatcharr creates the EPG entry for a new dummy source itself;
+            # make it here too in case that signal didn't run.
+            epg = self.m.EPGData.objects.filter(epg_source=src).first()
+            if epg is None:
+                epg = self.m.EPGData.objects.create(tvg_id=GUIDE_TVG_ID, name=GUIDE_NAME,
+                                                    epg_source=src)
+            return epg
+        except Exception as exc:
+            log.exception("guide setup failed")
+            res.warnings.append(f"guide entries skipped: {exc}")
+            return None
+
+    def _logo(self, st: Station, res: SyncResult) -> Optional[Any]:
+        """The station's ``logo=`` image, else the Rad Streams logo."""
+        url = st.logo_url or self.default_logo
+        if self.m.Logo is None or not url:
+            return None
+        if url in self._logos:
+            return self._logos[url]
+        name = st.name if st.logo_url else GUIDE_NAME
+        try:
+            logo, _ = self.m.Logo.objects.get_or_create(url=url, defaults={"name": name[:255]})
+        except Exception as exc:
+            log.exception("logo setup failed for %s", st.name)
+            res.warnings.append(f"{st.name}: logo skipped: {exc}")
+            logo = None
+        self._logos[url] = logo
+        return logo
+
+    @staticmethod
+    def _managed(current_id, last_set_id) -> bool:
+        """True if Sync may change this field: it's empty, or still what Sync set."""
+        return current_id is None or (last_set_id is not None and current_id == last_set_id)
+
     # ---- main ------------------------------------------------------------
     def sync(self, stations: list[Station], url_for) -> SyncResult:
         """``url_for(station)`` gives the station's route on the local server."""
         res = SyncResult()
+        self._logos = {}          # Logo rows looked up during this Sync, by URL
         mapping = self._mapping()
         group, _ = self.m.ChannelGroup.objects.get_or_create(name=GROUP_NAME)
         wanted = {s.station_id for s in stations}
@@ -103,6 +206,7 @@ class ChannelSync:
 
     def _sync(self, stations, url_for, mapping, group, wanted, new_mapping, res) -> None:
         self._undeleted: set = set()
+        guide = self._guide(res)
         # Removals first, so their channel numbers are free for new stations.
         for sid, entry in mapping.items():
             if sid in wanted:
@@ -132,15 +236,16 @@ class ChannelSync:
             changed = False
             is_new = channel is None
 
+            want_name = stream_name(st)
             if stream is None:
                 stream = self.m.Stream.objects.create(
-                    name=STREAM_PREFIX + st.name, url=url, is_custom=True,
+                    name=want_name, url=url, is_custom=True,
                     channel_group=group, stream_profile_id=self._profile())
                 changed = True
             else:
                 fields = []
-                if stream.name != STREAM_PREFIX + st.name:
-                    stream.name = STREAM_PREFIX + st.name
+                if stream.name != want_name:
+                    stream.name = want_name
                     fields.append("name")
                 if stream.url != url:
                     stream.url = url
@@ -157,13 +262,19 @@ class ChannelSync:
                                         f"'{clash.name}', using another number")
                     number = None
 
+            logo = self._logo(st, res)
             if channel is None:
                 if number is None:
                     number = self.m.Channel.get_next_available_channel_number(
                         starting_from=AUTO_NUMBER_FROM)
+                extra = {}
+                if logo is not None:
+                    extra["logo"] = logo
+                if guide is not None:
+                    extra["epg_data"] = guide
                 channel = self.m.Channel.objects.create(
                     name=st.name, channel_number=number, channel_group=group,
-                    stream_profile_id=self._profile())
+                    stream_profile_id=self._profile(), **extra)
                 changed = True
             else:
                 fields = []
@@ -176,6 +287,16 @@ class ChannelSync:
                 if getattr(channel, "channel_group_id", None) != group.id:
                     channel.channel_group = group
                     fields.append("channel_group")
+                have_logo = getattr(channel, "logo_id", None)
+                if (logo is not None and have_logo != logo.id
+                        and self._managed(have_logo, entry.get("logo_id"))):
+                    channel.logo = logo
+                    fields.append("logo")
+                have_epg = getattr(channel, "epg_data_id", None)
+                if (guide is not None and have_epg != guide.id
+                        and self._managed(have_epg, entry.get("epg_data_id"))):
+                    channel.epg_data = guide
+                    fields.append("epg_data")
                 if fields:
                     channel.save(update_fields=fields)
                     changed = True
@@ -184,8 +305,14 @@ class ChannelSync:
                 channel=channel, stream=stream, defaults={"order": 0})
             changed = changed or linked
 
-            new_mapping[st.station_id] = {"channel_id": channel.id, "stream_id": stream.id,
-                                          "name": st.name}
+            new_entry = {"channel_id": channel.id, "stream_id": stream.id, "name": st.name}
+            # Remember what Sync set, so a later Sync can tell it from a hand-picked one.
+            for key, obj, attr in (("logo_id", logo, "logo_id"), ("epg_data_id", guide, "epg_data_id")):
+                if obj is not None and getattr(channel, attr, None) == obj.id:
+                    new_entry[key] = obj.id
+                elif entry.get(key) is not None and getattr(channel, attr, None) == entry.get(key):
+                    new_entry[key] = entry[key]
+            new_mapping[st.station_id] = new_entry
             (res.created if is_new else res.updated if changed else res.unchanged).append(st.name)
 
     def _channel_for(self, stream) -> Optional[Any]:
@@ -204,4 +331,21 @@ class ChannelSync:
                 if obj is not None:
                     obj.delete()
         net.write_json(self.mapping_path, {})
+        self._remove_guide()
         return len(mapping)
+
+    def _remove_guide(self) -> None:
+        """Delete the plugin's EPG source (its entry goes with it). Logos are left,
+        since other channels may use them."""
+        if self.m.EPGSource is None:
+            return
+        try:
+            src = self.m.EPGSource.objects.filter(name=GUIDE_NAME).first()
+            if src is not None and src.source_type == "dummy" and \
+                    (src.custom_properties or {}).get("managed_by") == MANAGED_BY:
+                if self.m.EPGData is not None:
+                    for epg in self.m.EPGData.objects.filter(epg_source=src):
+                        epg.delete()
+                src.delete()
+        except Exception:
+            log.exception("could not remove the Rad Streams EPG source")

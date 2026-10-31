@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Optional
 
-from . import cleanup, net
+from . import cleanup, encoder, net
 from .config import RenderSettings, Station
 from .server import DEFAULT_PORT, RadioServer
 from .render import splash_size
@@ -38,7 +38,8 @@ def load_config(path: str) -> tuple[list[Station], RenderSettings, dict]:
     data = net.read_json(path)
     if not isinstance(data, dict):
         raise ValueError(f"unreadable config: {path}")
-    stations = [Station(s["name"], s["stream_url"], s["city"], s.get("channel_number"))
+    stations = [Station(s["name"], s["stream_url"], s["city"], s.get("channel_number"),
+                        key=s.get("id") or None, logo_url=s.get("logo_url") or None)
                 for s in data.get("stations", [])]
     known = set(RenderSettings.__dataclass_fields__)
     settings = RenderSettings(**{k: v for k, v in (data.get("render") or {}).items() if k in known})
@@ -77,6 +78,7 @@ class Service:
         self.server = RadioServer(stations, settings, **opts)
         self.server.start()
         self._prewarm_splash(settings)
+        self._prewarm_encoder(settings)
         self._write_status()
         last_status = time.monotonic()
         last_cleanup = None
@@ -120,6 +122,7 @@ class Service:
             self.server.linger = opts["linger_seconds"]
             self.server.update(stations, settings)
         self._prewarm_splash(settings)
+        self._prewarm_encoder(settings)
         log.info("config reloaded: %d stations", len(stations))
 
     @staticmethod
@@ -147,8 +150,29 @@ class Service:
                 log.exception("splash drawing failed")
         threading.Thread(target=work, name="splash", daemon=True).start()
 
+    @staticmethod
+    def _prewarm_encoder(settings) -> None:
+        """Test a GPU encoder now, so a first viewer doesn't wait for the test."""
+        if settings.video_encoder == "software":
+            return
+
+        def work():
+            try:
+                encoder.resolve(settings.video_encoder)
+            except Exception:
+                log.exception("encoder test failed")
+        threading.Thread(target=work, name="encoder-probe", daemon=True).start()
+
     def _write_status(self, running: bool = True) -> None:
         status = self.server.status() if self.server else {}
+        if self.server is not None:
+            wanted = self.server.settings.video_encoder
+            known = encoder.cached(wanted)
+            status["video_encoder"] = {
+                "requested": wanted,
+                "using": known[0] if known else None,     # None while the test runs
+                "fallback_reason": known[1] if known else None,
+            }
         status.update(pid=os.getpid(), running=running, updated_at=time.time(),
                       run_token=os.environ.get("RS_RUN_TOKEN", ""))
         try:

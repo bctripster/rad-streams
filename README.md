@@ -47,7 +47,26 @@ space or nature, without the city and weather.
 After updating the plugin files, press **Sync Stations** once: it restarts the stream server so the new code takes effect.
 
 Sync again after any edit. It creates, updates and removes channels to match the list.
-Renaming a station creates a new channel, because the name is the station's id.
+
+### Optional columns: `id=` and `logo=`
+
+After the Channel # column you can add `id=` and `logo=`, in either order. The Channel # column can be left empty (`| |`) or left out:
+
+```
+KEXP Seattle | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501 | id=KEXP
+SomaFM Groove Salad | https://ice1.somafm.com/groovesalad-128-mp3 | San Francisco, CA | | logo=https://example.com/groove-salad.png
+```
+
+- **`id=`** keeps a station's channel when you rename it. A station's id comes from its name, so a plain rename makes a new channel (and the old one, with its number and favourites, is removed). To rename, add `id=` with the **old** name, then change the name. Adding `id=<current name>` to an existing station changes nothing, so it's safe to add it before you need it.
+- **`logo=`** sets the channel's logo from an `http://` or `https://` image URL. Without it, channels get the Rad Streams logo, which Sync copies to `/data/logos/rad-streams.png`.
+
+### Guide and logos
+
+Sync gives every Rad Streams channel a logo and a guide entry, so TV apps show them like other channels.
+The guide comes from a "Custom Dummy EPG" source called **Rad Streams** that Sync creates: each channel
+shows the station's name with "Live from Seattle, WA" (or "Nature photos" for a theme) in 4-hour blocks.
+Dispatcharr generates these on the fly, so they never run out. If you pick a different logo or EPG for a
+channel by hand, Sync leaves it alone. Remove All Channels also deletes the Rad Streams EPG source.
 
 ## Settings
 
@@ -59,6 +78,7 @@ Renaming a station creates a new channel, because the name is the station's id.
 | Video Bitrate | Upper limit per station. Still pictures usually use far less. |
 | Text Movement | Burn-in protection: the text moves to a new spot on every photo change (once a minute), cycling through 8 positions, random, or corners only. It holds still in between. |
 | Photo Credits | Brief (default) shows the photo and weather credit for 5 seconds when each photo appears, then fades it out. Always keeps it on screen. The licences require a credit, so it can't be turned off. |
+| Video Encoding | Software (default) or a GPU: VAAPI (Intel/AMD), Intel Quick Sync, or NVIDIA NVENC. The GPU has to be passed through to the Dispatcharr container (`/dev/dri` for Intel/AMD, the NVIDIA container runtime for NVIDIA). Sync tests the GPU and falls back to software encoding, with a warning, if it doesn't work. Status shows which one is in use. |
 | Server Port | Local port for the channel streams (default 5980, bound to 127.0.0.1). |
 
 ## Actions
@@ -104,7 +124,8 @@ Files, all under `/data/rad_streams/`:
 - **Port in use:** change Server Port and Sync. The channels are re-pointed automatically.
 - **Use the "Proxy" stream profile** (Sync picks it automatically). An ffmpeg-based profile can read a real-time source as "buffering" and try to switch streams.
 - **No track titles:** some stations don't send ICY metadata. Validate says so.
-- **CPU:** a 1080p station uses roughly half of one CPU core while someone is watching, and nothing otherwise.
+- **CPU:** a 1080p station uses roughly half of one CPU core while someone is watching, and nothing otherwise. GPU encoding (Video Encoding setting) takes the H.264 encode off the CPU; drawing the frames and blending them up to 25 fps still use the CPU.
+- **GPU encoding not used:** Sync's message and `logs/rad_streams.log` give the reason, such as "Cannot load libcuda.so.1" (the NVIDIA runtime isn't set up for the container) or "no /dev/dri render device" (pass `/dev/dri` through).
 
 ## Standalone testing
 
@@ -117,6 +138,8 @@ python3 -m rs --name "KEXP" --url "https://kexp.streamguys1.com/kexp160.aac" \
 python3 -m rs.server --stations stations.txt                 # serve /radio/<id>.ts routes
 ```
 
+`python3 -m pip install -r requirements-dev.txt` installs what the tests need.
+GitHub runs the same tests on every push and pull request (`.github/workflows/tests.yml`).
 `python3 -m pytest tests` runs the test suite offline, using a fake ICY
 server, canned API responses, synthetic photos, and a stand-in for
 Dispatcharr's channel models.
@@ -124,7 +147,7 @@ Dispatcharr's channel models.
 ## Code layout
 
 - `plugin.py`, `plugin.json`: Dispatcharr plugin (settings, actions, service lifecycle)
-- `rs/channels.py`: channel/stream sync
+- `rs/channels.py`: channel/stream sync, guide entries and logos
 - `rs/validate.py`: Validate checks
 - `rs/service.py`: the background process
 - `rs/server.py`: on-demand HTTP server
@@ -138,7 +161,7 @@ Dispatcharr's channel models.
 - `rs/splash.py`: the splash screen, drawn in code
 - `rs/cleanup.py`: the daily cache cleanup
 - `rs/themes.py`: theme channels (`Theme: Space`) and their searches
-- `rs/encoder.py`: ffmpeg encoder process
+- `rs/encoder.py`: ffmpeg encoder process, and the GPU encoder test
 
 ## License
 

@@ -28,14 +28,14 @@ except ImportError:  # pragma: no cover - Windows
     fcntl = None
 
 try:  # relative when Dispatcharr imports us as a package, absolute in tests
-    from .rs import net, validate
+    from .rs import encoder, net, validate
     from .rs.channels import ChannelSync, Models
-    from .rs.config import RESOLUTIONS, RenderSettings, parse_stations
+    from .rs.config import RESOLUTIONS, VIDEO_ENCODERS, RenderSettings, parse_stations
     from .rs.server import DEFAULT_PORT
 except ImportError:
-    from rs import net, validate
+    from rs import encoder, net, validate
     from rs.channels import ChannelSync, Models
-    from rs.config import RESOLUTIONS, RenderSettings, parse_stations
+    from rs.config import RESOLUTIONS, VIDEO_ENCODERS, RenderSettings, parse_stations
     from rs.server import DEFAULT_PORT
 
 _log = logging.getLogger("plugins.rad_streams")
@@ -52,6 +52,9 @@ _STATIONS_HELP = (
     "e.g. Theme: Space. Built in: Space, Earth, Nature, Ocean, Mountains, Forest, Waterfalls, Desert, "
     "Aurora, Sunsets, Beaches, Lakes, Wildlife, Night Sky; any other word is searched on Wikimedia Commons. "
     "Icecast/Shoutcast, .pls/.m3u and HLS (.m3u8) stream URLs all work. "
+    "Optional extra columns: id=<old name> keeps a station's channel when you rename it, "
+    "and logo=<image URL> sets its channel logo (default: the Rad Streams logo). "
+    "Example: KEXP Seattle | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501 | id=KEXP. "
     "Lines starting with # are ignored. Press Sync Stations after editing."
 )
 
@@ -66,7 +69,7 @@ def _data_dir() -> Path:
 
 class Plugin:
     name = "Rad Streams"
-    version = "0.4.20"
+    version = "0.5.0"
     description = ("Internet radio stations as TV channels: photos of each station's city, "
                    "the current track and local weather, with the station playing underneath.")
 
@@ -96,6 +99,14 @@ class Plugin:
          "options": [{"value": "brief", "label": "Show for 5 seconds per photo"},
                      {"value": "always", "label": "Always show"}],
          "help_text": "Photo and weather licences require a credit; brief shows it when each photo appears, then fades it out."},
+        {"id": "video_encoder", "label": "Video Encoding", "type": "select", "default": "software",
+         "options": [{"value": "software", "label": "Software (CPU)"},
+                     {"value": "vaapi", "label": "VAAPI (Intel or AMD GPU)"},
+                     {"value": "qsv", "label": "Intel Quick Sync"},
+                     {"value": "nvenc", "label": "NVIDIA NVENC"}],
+         "help_text": "A GPU takes the video encoding off the CPU. The container needs the GPU "
+                      "passed through (/dev/dri, or the NVIDIA runtime). Sync tests it and uses "
+                      "software encoding if it doesn't work."},
         {"id": "port", "label": "Server Port", "type": "number", "default": DEFAULT_PORT,
          "min": 1024, "max": 65535, "step": 1,
          "help_text": "Local port for the channel streams (127.0.0.1 only). Change it if something else uses it."},
@@ -167,7 +178,7 @@ class Plugin:
         self._write_service_config(parsed.stations, render, port,
                                    desired=bool(parsed.stations) and has_ffmpeg)
 
-        sync = ChannelSync(self._models(), str(self.mapping_path))
+        sync = ChannelSync(self._models(), str(self.mapping_path), default_logo=self._default_logo())
         res = sync.sync(parsed.stations,
                         lambda st: f"http://127.0.0.1:{port}/radio/{st.station_id}.ts")
 
@@ -186,6 +197,12 @@ class Plugin:
             server = "server stopped"
         msg = f"Channels: {res.summary()}; {server}."
         extra = parsed.errors + res.warnings
+        if render.video_encoder != "software":
+            # Test the GPU here too (same container), so Sync can say if it isn't used.
+            reason = encoder.probe(render.video_encoder)
+            if reason:
+                extra.insert(0, f"{encoder.ENCODER_LABELS[render.video_encoder]} isn't working "
+                                f"({reason}), so software encoding is used")
         if extra:
             msg += f" {len(extra)} warning(s): {extra[0]}"
             self._write_log("sync.log", "\n".join([msg, ""] + extra))
@@ -216,6 +233,12 @@ class Plugin:
                 for s in live)
         else:
             msg += "; nobody watching"
+        enc = st.get("video_encoder") or {}
+        if enc.get("requested") not in (None, "software"):
+            if enc.get("using") == enc.get("requested"):
+                msg += f"; encoding with {encoder.ENCODER_LABELS.get(enc['using'], enc['using'])}"
+            elif enc.get("using"):
+                msg += "; GPU encoding unavailable, using software"
         return {"status": "ok", "message": msg + "."}
 
     def _stop_server_action(self, settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -252,6 +275,8 @@ class Plugin:
             video_kbps=self._int(settings.get("video_kbps"), 3000, 500, 20000),
             text_pattern=pattern if pattern in ("cycle", "random", "corners") else "cycle",
             credit_seconds=0.0 if settings.get("credit_mode") == "always" else 5.0,
+            video_encoder=(settings.get("video_encoder")
+                           if settings.get("video_encoder") in VIDEO_ENCODERS else "software"),
             data_dir=str(self.data_dir),
         )
 
@@ -263,7 +288,8 @@ class Plugin:
             "linger_seconds": 10,
             "render": render.__dict__,
             "stations": [{"name": s.name, "stream_url": s.stream_url, "city": s.city,
-                          "channel_number": s.channel_number} for s in stations],
+                          "channel_number": s.channel_number, "id": s.key,
+                          "logo_url": s.logo_url} for s in stations],
         }
         net.write_json(str(self.config_path), data)
 
@@ -281,7 +307,37 @@ class Plugin:
     def _models():
         from apps.channels.models import Channel, ChannelGroup, ChannelStream, Stream
         from core.models import StreamProfile
-        return Models(Channel, ChannelGroup, ChannelStream, Stream, StreamProfile)
+        try:   # guide and logo support are optional: skip them on a Dispatcharr without these
+            from apps.epg.models import EPGData, EPGSource
+        except ImportError:
+            EPGData = EPGSource = None
+        try:
+            from apps.channels.models import Logo
+        except ImportError:
+            Logo = None
+        return Models(Channel, ChannelGroup, ChannelStream, Stream, StreamProfile,
+                      EPGSource=EPGSource, EPGData=EPGData, Logo=Logo)
+
+    def _default_logo(self) -> Optional[str]:
+        """Copy the bundled logo to /data/logos, where Dispatcharr serves channel logos from.
+
+        Returns its path, or None if it can't be placed there (Dispatcharr only
+        serves local logo files from /data/logos).
+        """
+        src = self.base_dir / "logo.png"
+        dest = self.data_dir.parent / "logos" / "rad-streams.png"
+        if not str(dest).startswith("/data/logos/") or not src.is_file():
+            return None
+        try:
+            if not dest.is_file() or dest.read_bytes() != src.read_bytes():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dest.with_suffix(".png.tmp")
+                shutil.copyfile(src, tmp)
+                os.replace(tmp, dest)      # atomic, so a half-written logo is never served
+        except OSError as exc:
+            _log.warning("could not copy the channel logo: %s", exc)
+            return None
+        return str(dest)
 
     # ---- the background service ------------------------------------------
     def _python(self) -> str:

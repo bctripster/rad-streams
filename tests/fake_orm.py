@@ -120,6 +120,16 @@ def make_models():
     class StreamProfile(FakeModel):
         pass
 
+    class EPGSource(FakeModel):
+        pass
+
+    class EPGData(FakeModel):
+        pass
+
+    class Logo(FakeModel):
+        pass
+
     StreamProfile.objects.create(name="ffmpeg")
     StreamProfile.objects.create(name="Proxy")
-    return Models(Channel, ChannelGroup, ChannelStream, Stream, StreamProfile)
+    return Models(Channel, ChannelGroup, ChannelStream, Stream, StreamProfile,
+                  EPGSource=EPGSource, EPGData=EPGData, Logo=Logo)
