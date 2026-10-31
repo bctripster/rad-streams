@@ -258,3 +258,68 @@ def test_probe_reason_is_the_first_error(monkeypatch):
                   b"[vost#0:0/h264_nvenc @ 0x55] Error while opening encoder\n")
     monkeypatch.setattr(encoder.subprocess, "run", lambda *a, **k: Done())
     assert encoder.probe("nvenc") == "Cannot load libcuda.so.1"
+
+
+def test_sync_tells_open_pages_to_reload_epg_lists(tmp_path, monkeypatch):
+    """Without this the EPG manager, dropdown and guide miss the new source until a reload."""
+    import sys
+    import types
+    sent = []
+    core = types.ModuleType("core")
+    utils = types.ModuleType("core.utils")
+    utils.send_websocket_update = lambda group, kind, data: sent.append((group, kind, data["type"]))
+    core.utils = utils
+    monkeypatch.setitem(sys.modules, "core", core)
+    monkeypatch.setitem(sys.modules, "core.utils", utils)
+    monkeypatch.setattr(plugin_mod, "_data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(plugin_mod.Plugin, "_schedule_autostart", lambda self: None)
+    models = make_models()
+    monkeypatch.setattr(plugin_mod.Plugin, "_models", staticmethod(lambda: models))
+    p = plugin_mod.Plugin()
+    r = p.run("remove_channels", {}, {"settings": {}})
+    assert r["status"] == "ok"
+    assert ("updates", "update", "epg_sources_changed") in sent
+    assert ("updates", "update", "epg_data_created") in sent
+
+
+def test_notify_ui_never_fails_a_sync(monkeypatch):
+    import sys
+    import types
+    utils = types.ModuleType("core.utils")
+
+    def boom(*a):
+        raise RuntimeError("redis down")
+    utils.send_websocket_update = boom
+    monkeypatch.setitem(sys.modules, "core", types.ModuleType("core"))
+    monkeypatch.setitem(sys.modules, "core.utils", utils)
+    plugin_mod.Plugin._notify_ui()      # no exception
+
+
+def test_guide_edited_in_dispatcharr_is_still_ours(tmp_path):
+    """Saving the source in Dispatcharr's Dummy EPG form drops our marker (seen live)."""
+    m = make_models()
+    sync = ChannelSync(m, str(tmp_path / "channels.json"))
+    sync.sync(stations("A | http://a/s | Austin, TX"), URL)
+    src = m.EPGSource.objects.get(name=GUIDE_NAME)
+    src.custom_properties = {k: v for k, v in GUIDE_PROPERTIES.items() if k != "managed_by"}
+    res = sync.sync(stations("A | http://a/s | Austin, TX\nB | http://b/s | Boston"), URL)
+    assert not res.warnings and res.created == ["B"]
+    assert src.custom_properties == GUIDE_PROPERTIES          # restored
+    epg = m.EPGData.objects.get(epg_source=src)
+    assert all(c.epg_data_id == epg.id for c in m.Channel.objects.all())
+
+    # even with every setting changed, the recorded id still identifies it
+    src.custom_properties = {"title_pattern": "something else"}
+    res = sync.sync(stations("A | http://a/s | Austin, TX"), URL)
+    assert not res.warnings and src.custom_properties == GUIDE_PROPERTIES
+
+
+def test_v050_guide_without_marker_or_record_is_recovered(tmp_path):
+    """Bob's case: made by v0.5.0 (no recorded id), then saved in the Dummy EPG form."""
+    m = make_models()
+    props = {k: v for k, v in GUIDE_PROPERTIES.items() if k != "managed_by"}
+    src = m.EPGSource.objects.create(name=GUIDE_NAME, source_type="dummy", custom_properties=props)
+    res = ChannelSync(m, str(tmp_path / "channels.json")).sync(
+        stations("A | http://a/s | Austin, TX"), URL)
+    assert not res.warnings and src.custom_properties == GUIDE_PROPERTIES
+    assert json.loads((tmp_path / "guide.json").read_text()) == {"source_id": src.id}

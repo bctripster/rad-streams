@@ -66,7 +66,8 @@ Sync gives every Rad Streams channel a logo and a guide entry, so TV apps show t
 The guide comes from a "Custom Dummy EPG" source called **Rad Streams** that Sync creates: each channel
 shows the station's name with "Live from Seattle, WA" (or "Nature photos" for a theme) in 4-hour blocks.
 Dispatcharr generates these on the fly, so they never run out. If you pick a different logo or EPG for a
-channel by hand, Sync leaves it alone. Remove All Channels also deletes the Rad Streams EPG source.
+channel by hand, Sync leaves it alone. Sync owns the Rad Streams EPG source itself, so changes made to it in
+Dispatcharr's Dummy EPG form are put back at the next Sync. Remove All Channels also deletes the Rad Streams EPG source.
 
 ## Settings
 
@@ -125,6 +126,7 @@ Files, all under `/data/rad_streams/`:
 - **Use the "Proxy" stream profile** (Sync picks it automatically). An ffmpeg-based profile can read a real-time source as "buffering" and try to switch streams.
 - **No track titles:** some stations don't send ICY metadata. Validate says so.
 - **CPU:** a 1080p station uses roughly half of one CPU core while someone is watching, and nothing otherwise. GPU encoding (Video Encoding setting) takes the H.264 encode off the CPU; drawing the frames and blending them up to 25 fps still use the CPU.
+- **Guide empty, or the Rad Streams EPG missing from the EPG manager:** reload the Dispatcharr page. Since v0.5.1 Sync tells open pages to reload their EPG lists, but an older Dispatcharr may not listen for that.
 - **GPU encoding not used:** Sync's message and `logs/rad_streams.log` give the reason, such as "Cannot load libcuda.so.1" (the NVIDIA runtime isn't set up for the container) or "no /dev/dri render device" (pass `/dev/dri` through).
 
 ## Standalone testing
