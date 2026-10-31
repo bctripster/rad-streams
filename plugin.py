@@ -69,7 +69,7 @@ def _data_dir() -> Path:
 
 class Plugin:
     name = "Rad Streams"
-    version = "0.5.0"
+    version = "0.5.1"
     description = ("Internet radio stations as TV channels: photos of each station's city, "
                    "the current track and local weather, with the station playing underneath.")
 
@@ -195,6 +195,7 @@ class Plugin:
         else:
             self._stop_service(keep_desired=False)
             server = "server stopped"
+        self._notify_ui()
         msg = f"Channels: {res.summary()}; {server}."
         extra = parsed.errors + res.warnings
         if render.video_encoder != "software":
@@ -249,6 +250,7 @@ class Plugin:
     def _remove_channels(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         self._stop_service(keep_desired=False)
         n = ChannelSync(self._models(), str(self.mapping_path)).remove_all()
+        self._notify_ui()
         return {"status": "ok", "message": f"Removed {n} channel(s) and stopped the server."}
 
     # ---- settings helpers -----------------------------------------------
@@ -317,6 +319,27 @@ class Plugin:
             Logo = None
         return Models(Channel, ChannelGroup, ChannelStream, Stream, StreamProfile,
                       EPGSource=EPGSource, EPGData=EPGData, Logo=Logo)
+
+    @staticmethod
+    def _notify_ui() -> None:
+        """Tell open Dispatcharr pages to reload their EPG lists.
+
+        The web page loads its EPG sources once, when it opens, so a source
+        that Sync creates is missing from the EPG manager and the channel
+        dropdown until a reload, and the TV guide can't match its programmes
+        to the channels. ``epg_sources_changed`` is the event Dispatcharr's
+        page listens for from plugins; ``epg_data_created`` reloads the EPG
+        entries. Best effort: an older Dispatcharr just needs a page reload.
+        """
+        try:
+            from core.utils import send_websocket_update
+        except ImportError:
+            return
+        for event in ("epg_sources_changed", "epg_data_created"):
+            try:
+                send_websocket_update("updates", "update", {"type": event})
+            except Exception as exc:   # never fail a Sync over a page refresh
+                _log.debug("could not send %s: %s", event, exc)
 
     def _default_logo(self) -> Optional[str]:
         """Copy the bundled logo to /data/logos, where Dispatcharr serves channel logos from.

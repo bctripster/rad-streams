@@ -258,3 +258,38 @@ def test_probe_reason_is_the_first_error(monkeypatch):
                   b"[vost#0:0/h264_nvenc @ 0x55] Error while opening encoder\n")
     monkeypatch.setattr(encoder.subprocess, "run", lambda *a, **k: Done())
     assert encoder.probe("nvenc") == "Cannot load libcuda.so.1"
+
+
+def test_sync_tells_open_pages_to_reload_epg_lists(tmp_path, monkeypatch):
+    """Without this the EPG manager, dropdown and guide miss the new source until a reload."""
+    import sys
+    import types
+    sent = []
+    core = types.ModuleType("core")
+    utils = types.ModuleType("core.utils")
+    utils.send_websocket_update = lambda group, kind, data: sent.append((group, kind, data["type"]))
+    core.utils = utils
+    monkeypatch.setitem(sys.modules, "core", core)
+    monkeypatch.setitem(sys.modules, "core.utils", utils)
+    monkeypatch.setattr(plugin_mod, "_data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(plugin_mod.Plugin, "_schedule_autostart", lambda self: None)
+    models = make_models()
+    monkeypatch.setattr(plugin_mod.Plugin, "_models", staticmethod(lambda: models))
+    p = plugin_mod.Plugin()
+    r = p.run("remove_channels", {}, {"settings": {}})
+    assert r["status"] == "ok"
+    assert ("updates", "update", "epg_sources_changed") in sent
+    assert ("updates", "update", "epg_data_created") in sent
+
+
+def test_notify_ui_never_fails_a_sync(monkeypatch):
+    import sys
+    import types
+    utils = types.ModuleType("core.utils")
+
+    def boom(*a):
+        raise RuntimeError("redis down")
+    utils.send_websocket_update = boom
+    monkeypatch.setitem(sys.modules, "core", types.ModuleType("core"))
+    monkeypatch.setitem(sys.modules, "core.utils", utils)
+    plugin_mod.Plugin._notify_ui()      # no exception
