@@ -1,6 +1,7 @@
 """City name -> coordinates via Open-Meteo geocoding (no API key), cached on disk."""
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -51,6 +52,8 @@ COUNTRY_ALIASES = {
 }
 # Bump when lookup rules change so cached answers from older rules are redone.
 CACHE_VERSION = 2
+
+log = logging.getLogger("rad_streams.geo")
 
 
 @dataclass
@@ -124,26 +127,50 @@ def _lookup(name: str, qualifiers: list[str]) -> Optional[dict]:
     return pick_result(data.get("results") or [], qualifiers, name)
 
 
+def _cached_place(cached) -> Optional[Place]:
+    """A Place from a cache entry written by the current lookup rules, else None."""
+    if not isinstance(cached, dict) or cached.get("_v") != CACHE_VERSION:
+        return None
+    try:
+        # Only the fields Place has, so an entry with extra keys still loads.
+        return Place(**{k: v for k, v in cached.items() if k in Place.__dataclass_fields__})
+    except TypeError:       # a required field is missing: treat as not cached
+        return None
+
+
 def geocode(city: str, cache_dir: Optional[str] = None) -> Optional[Place]:
-    """Resolve 'City', 'City, ST' or 'City, Country' to a Place, or None."""
+    """Resolve 'City', 'City, ST' or 'City, Country' to a Place, or None.
+
+    Answers are cached for ``CACHE_DAYS``. When a fresh lookup fails (the
+    service is down or hanging), an expired answer is used instead: a city's
+    coordinates don't change, and losing them would drop the weather and
+    switch the station to a different photo folder.
+    """
     city = (city or "").strip()
     if not city:
         return None
     cache_path = os.path.join(cache_dir, "geocode", slug(city) + ".json") if cache_dir else None
+    stale: Optional[Place] = None
     if cache_path:
         cached = net.read_json(cache_path)
-        if (cached and cached.get("_v") == CACHE_VERSION
-                and time.time() - cached.get("_t", 0) < CACHE_DAYS * 86400):
-            cached.pop("_t", None)
-            cached.pop("_v", None)
-            return Place(**cached)
+        stale = _cached_place(cached)
+        if stale is not None and time.time() - cached.get("_t", 0) < CACHE_DAYS * 86400:
+            return stale
 
     parts = [p.strip() for p in city.split(",") if p.strip()]
+    if not parts:           # only commas
+        return None
     name, qualifiers = parts[0], parts[1:]
-    hit = _lookup(name, qualifiers)
-    saint = re.sub(r"^(St|Ste)\.?\s+", lambda m: "Saint " if m.group(1) == "St" else "Sainte ", name)
-    if saint != name and (not hit or not str(hit.get("feature_code", "PPL")).startswith("PPL")):
-        hit = _lookup(saint, qualifiers) or hit  # "St. Paul, MN" is listed as "Saint Paul"
+    try:
+        hit = _lookup(name, qualifiers)
+        saint = re.sub(r"^(St|Ste)\.?\s+", lambda m: "Saint " if m.group(1) == "St" else "Sainte ", name)
+        if saint != name and (not hit or not str(hit.get("feature_code", "PPL")).startswith("PPL")):
+            hit = _lookup(saint, qualifiers) or hit  # "St. Paul, MN" is listed as "Saint Paul"
+    except Exception as exc:
+        if stale is None:
+            raise
+        log.warning("city lookup for %r failed (%s); using the saved answer", city, exc)
+        return stale
     if not hit:
         return None
     place = Place(

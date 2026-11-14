@@ -11,12 +11,14 @@ import glob
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
+import time
 from typing import IO, Optional, Union
 
 from .audio import CHANNELS, SAMPLE_RATE
-from .config import VIDEO_ENCODERS
+from .config import VIDEO_ENCODERS, X264_PRESETS
 
 log = logging.getLogger("rad_streams.encoder")
 
@@ -25,6 +27,34 @@ ENCODER_LABELS = {"software": "software (CPU)", "vaapi": "VAAPI (Intel/AMD GPU)"
 PROBE_TIMEOUT = 10.0
 PROBE_SIZE = (640, 360)
 PROBE_FRAMES = 5
+# A GPU encoder that passed its test can still fail for real (a card's limit
+# on simultaneous encodes, a driver reset). An ffmpeg that exits this soon
+# after starting counts as that, and the software encoder takes over.
+EARLY_EXIT_SECONDS = 15.0
+SOFTWARE_CRF = 23           # libx264 quality target; the bitrate setting caps it
+FFMPEG_LOG_MAX = 2 * 1024 * 1024
+
+
+def rotate_log(path: Optional[str], max_bytes: int = FFMPEG_LOG_MAX, in_use: bool = False) -> bool:
+    """Keep an ffmpeg log from growing forever: past ``max_bytes`` it becomes ``<path>.1``.
+
+    With ``in_use`` the file is copied and then emptied in place, because a
+    running ffmpeg holds it open; it was opened for appending, so its next
+    line lands at the new end. Returns True if the log was rotated.
+    """
+    if not path:
+        return False
+    try:
+        if os.path.getsize(path) <= max_bytes:
+            return False
+        if in_use:
+            shutil.copyfile(path, path + ".1")
+            os.truncate(path, 0)
+        else:
+            os.replace(path, path + ".1")
+        return True
+    except OSError:
+        return False
 
 
 def render_device() -> Optional[str]:
@@ -33,12 +63,14 @@ def render_device() -> Optional[str]:
     return nodes[0] if nodes else None
 
 
-def video_args(encoder: str, video_kbps: int, gop: int) -> tuple[list[str], str, list[str]]:
+def video_args(encoder: str, video_kbps: int, gop: int,
+               preset: str = "veryfast") -> tuple[list[str], str, list[str]]:
     """``(global args, pixel-format filter, codec args)`` for one video encoder.
 
     The global args go before the inputs (a VAAPI device has to be opened
     first); the filter is appended to the frame-rate filter. An unknown or
-    unusable name gives the software encoder.
+    unusable name gives the software encoder. ``preset`` is the libx264 speed
+    preset (software only).
     """
     rate = ["-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k",
             "-bufsize", f"{video_kbps * 2}k", "-g", str(gop)]
@@ -54,8 +86,14 @@ def video_args(encoder: str, video_kbps: int, gop: int) -> tuple[list[str], str,
     if encoder == "nvenc":
         return ([], "format=yuv420p",
                 ["-c:v", "h264_nvenc", "-preset", "p4", *rate, "-bf", "0", "-forced-idr", "1"])
+    if preset not in X264_PRESETS:
+        preset = "veryfast"
+    # Quality-based with the bitrate as a ceiling: a still photo then uses only
+    # what it needs, instead of always spending the whole bitrate.
+    quality = ["-crf", str(SOFTWARE_CRF), "-maxrate", f"{video_kbps}k",
+               "-bufsize", f"{video_kbps * 2}k", "-g", str(gop)]
     return ([], "format=yuv420p",
-            ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", *rate,
+            ["-c:v", "libx264", "-preset", preset, "-tune", "zerolatency", *quality,
              "-keyint_min", str(gop), "-sc_threshold", "0"])
 
 
@@ -126,16 +164,33 @@ def resolve(encoder: str, ffmpeg: str = "ffmpeg") -> tuple[str, Optional[str]]:
     return ("software", reason) if reason else (encoder, None)
 
 
+def mark_failed(encoder: str, reason: str, ffmpeg: str = "ffmpeg") -> None:
+    """Record that a GPU encoder stopped working, so later renderers use software."""
+    if encoder not in VIDEO_ENCODERS or encoder == "software":
+        return
+    with _resolve_lock:
+        _resolved[(encoder, ffmpeg)] = reason
+    log.warning("%s encoding failed (%s); using software encoding from now on",
+                ENCODER_LABELS.get(encoder, encoder), reason)
+
+
+def forget() -> None:
+    """Drop every remembered test result, so each GPU encoder is tested again (on Sync)."""
+    with _resolve_lock:
+        _resolved.clear()
+
+
 def build_command(width: int, height: int, render_fps: float, output_fps: int, video_kbps: int,
                   audio_kbps: int, audio_fd: int, output: str, *, ffmpeg: str = "ffmpeg",
-                  smooth: bool = True, video_encoder: str = "software") -> list[str]:
+                  smooth: bool = True, video_encoder: str = "software",
+                  x264_preset: str = "veryfast") -> list[str]:
     """``video_encoder`` should already be ``resolve()``-d: it isn't tested here."""
     gop = max(1, int(output_fps * 2))  # keyframe every 2 s so viewers join quickly
     # framerate= blends neighbouring frames, which turns the few-fps render
     # into smooth crossfades; fps= only repeats frames.
     vf = (f"framerate=fps={output_fps}:interp_start=0:interp_end=255:scene=100"
           if smooth else f"fps={output_fps}")
-    pre, fmt, codec = video_args(video_encoder, video_kbps, gop)
+    pre, fmt, codec = video_args(video_encoder, video_kbps, gop, x264_preset)
     cmd = [
         ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", *pre,
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
@@ -160,16 +215,18 @@ class Encoder:
     def __init__(self, width: int, height: int, *, render_fps: float, output_fps: int,
                  video_kbps: int, audio_kbps: int, output: Union[str, IO[bytes]],
                  ffmpeg: str = "ffmpeg", smooth: bool = True, log_path: Optional[str] = None,
-                 video_encoder: str = "software"):
+                 video_encoder: str = "software", x264_preset: str = "veryfast"):
         self.width, self.height = width, height
         self.args = dict(render_fps=render_fps, output_fps=output_fps, video_kbps=video_kbps,
-                         audio_kbps=audio_kbps, ffmpeg=ffmpeg, smooth=smooth)
+                         audio_kbps=audio_kbps, ffmpeg=ffmpeg, smooth=smooth,
+                         x264_preset=x264_preset)
         # A GPU encoder is tested (once per process) before it's used.
         self.args["video_encoder"], self.fallback_reason = resolve(video_encoder, ffmpeg)
         self.output = output
         self.log_path = log_path
         self.proc: Optional[subprocess.Popen] = None
         self.audio_w: Optional[int] = None
+        self.started_at = 0.0
 
     @property
     def stdout(self) -> Optional[IO[bytes]]:
@@ -200,9 +257,35 @@ class Encoder:
             if stderr is not subprocess.DEVNULL:
                 stderr.close()
         self.audio_w = audio_w
+        self.started_at = time.monotonic()
 
     def write_video(self, frame_bytes: bytes) -> None:
-        self.proc.stdin.write(frame_bytes)
+        # The pipe is unbuffered, so one write can send only part of a frame (if a
+        # signal interrupts it). Keep going until all of it is sent: a short
+        # frame would shift every frame after it.
+        view = memoryview(frame_bytes)
+        while view:
+            n = self.proc.stdin.write(view)
+            if not n:
+                raise BrokenPipeError("encoder stopped")
+            view = view[n:]
+
+    def gpu_failed_at_start(self) -> Optional[str]:
+        """Why a GPU encode died right after starting, or None if that isn't what happened.
+
+        Call when writing to ffmpeg failed. True only when a GPU encoder is in
+        use and ffmpeg exited by itself within ``EARLY_EXIT_SECONDS``.
+        """
+        proc, used = self.proc, self.args["video_encoder"]
+        if proc is None or used == "software":
+            return None
+        if time.monotonic() - self.started_at > EARLY_EXIT_SECONDS:
+            return None
+        try:
+            code = proc.wait(timeout=1.0)     # it has just closed its pipes; let it finish exiting
+        except subprocess.TimeoutExpired:
+            return None                       # still running: not an encoder failure
+        return f"ffmpeg exited with code {code} right after starting"
 
     def write_audio(self, pcm: bytes) -> None:
         view = memoryview(pcm)

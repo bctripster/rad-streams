@@ -76,11 +76,12 @@ Dispatcharr's Dummy EPG form are put back at the next Sync. Remove All Channels 
 | Stations | The station list (see above). |
 | Temperature Units | °F/mph or °C/km/h. |
 | Resolution | 480p up to 4K. Default 1080p. |
-| Video Bitrate | Upper limit per station. Still pictures usually use far less. |
+| Video Bitrate | Upper limit per station. With software encoding the picture is encoded to a quality level, so still photos use less than the limit. |
 | Text Movement | Burn-in protection: the text moves to a new spot on every photo change (once a minute), cycling through 8 positions, random, or corners only. It holds still in between. |
 | Photo Credits | Brief (default) shows the photo and weather credit for 5 seconds when each photo appears, then fades it out. Always keeps it on screen. The licences require a credit, so it can't be turned off. |
 | Video Encoding | Software (default) or a GPU: VAAPI (Intel/AMD), Intel Quick Sync, or NVIDIA NVENC. The GPU has to be passed through to the Dispatcharr container (`/dev/dri` for Intel/AMD, the NVIDIA container runtime for NVIDIA). Sync tests the GPU and falls back to software encoding, with a warning, if it doesn't work. Status shows which one is in use. |
-| Server Port | Local port for the channel streams (default 5980, bound to 127.0.0.1). |
+| CPU Use | Normal (default) sends 25 frames a second. Low sends 15 and uses a faster encoder preset, which takes about a third less CPU per station with software encoding. Crossfades look a little less smooth. |
+| Server Port | Local port for the channel streams (default 5980, bound to 127.0.0.1). Sync checks the port first and changes nothing if something else is using it. |
 
 ## Actions
 
@@ -122,12 +123,13 @@ Files, all under `/data/rad_streams/`:
 ## Troubleshooting
 
 - **Channel won't play:** press Status. If the server isn't running, press Sync and check `logs/service-console.log` and `logs/rad_streams.log`.
-- **Port in use:** change Server Port and Sync. The channels are re-pointed automatically.
+- **Port in use:** Sync says so and changes nothing. Change Server Port and Sync again; the channels are re-pointed automatically.
 - **Use the "Proxy" stream profile** (Sync picks it automatically). An ffmpeg-based profile can read a real-time source as "buffering" and try to switch streams.
 - **No track titles:** some stations don't send ICY metadata. Validate says so.
-- **CPU:** a 1080p station uses roughly half of one CPU core while someone is watching, and nothing otherwise. GPU encoding (Video Encoding setting) takes the H.264 encode off the CPU; drawing the frames and blending them up to 25 fps still use the CPU.
+- **CPU:** a 1080p station uses roughly half of one CPU core while someone is watching, and nothing otherwise. GPU encoding (Video Encoding setting) takes the H.264 encode off the CPU; drawing the frames and blending them up to 25 fps still use the CPU. The CPU Use setting's Low choice cuts the software encoder's share by about a third.
 - **Guide empty, or the Rad Streams EPG missing from the EPG manager:** reload the Dispatcharr page. Since v0.5.1 Sync tells open pages to reload their EPG lists, but an older Dispatcharr may not listen for that.
-- **GPU encoding not used:** Sync's message and `logs/rad_streams.log` give the reason, such as "Cannot load libcuda.so.1" (the NVIDIA runtime isn't set up for the container) or "no /dev/dri render device" (pass `/dev/dri` through).
+- **GPU encoding not used:** Sync's message and `logs/rad_streams.log` give the reason, such as "Cannot load libcuda.so.1" (the NVIDIA runtime isn't set up for the container) or "no /dev/dri render device" (pass `/dev/dri` through). If a GPU passes Sync's test but an encode then fails as a station starts (some NVIDIA cards limit how many run at once), that station restarts with software encoding and Status says so until the next Sync.
+- **After a Dispatcharr database reset or restore:** press Sync. Rad Streams only updates or deletes channels it can recognise as its own, so it creates fresh ones and leaves any others alone.
 
 ## Standalone testing
 

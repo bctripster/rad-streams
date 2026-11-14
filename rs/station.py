@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import random
 import threading
 import time
 from typing import IO, Callable, Optional, Union
 
-from . import geo, themes, weather as weather_mod
+from . import encoder as encoder_mod, geo, themes, weather as weather_mod
 from .audio import BYTES_PER_SECOND, RadioSource
 from .config import RenderSettings, Station
 from .encoder import Encoder
@@ -23,6 +22,7 @@ WEATHER_STALE_SECONDS = 3 * 3600
 GEOCODE_RETRY_SECONDS = 300
 TOUCH_SECONDS = 6 * 3600   # how often a running station marks its photos as in use
 SPLASH_SECONDS = 5.0     # the Rad Streams splash always shows this long when a station starts
+LOG_CHECK_SECONDS = 600  # how often a running station checks the size of its ffmpeg log
 
 
 class StationRunner:
@@ -54,11 +54,13 @@ class StationRunner:
                                output_fps=settings.output_fps, video_kbps=settings.video_kbps,
                                audio_kbps=settings.audio_kbps, output=output, ffmpeg=ffmpeg,
                                smooth=smooth, log_path=log_path,
-                               video_encoder=settings.video_encoder)
+                               video_encoder=settings.video_encoder,
+                               x264_preset=settings.x264_preset)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._photos: list[Photo] = []
         self._photo_i = -1
+        self._shown_file: Optional[str] = None   # the photo on screen, to avoid an immediate repeat
         self._next_switch = 0.0
         self.started_at = 0.0
         self.frames_rendered = 0
@@ -153,7 +155,14 @@ class StationRunner:
     def _fail(self) -> None:
         # Stop everything and end the encoder's output, so the server sees EOF
         # and tells viewers to reconnect, rather than leaving a frozen stream.
+        already = self._stop.is_set()
         self._stop.set()
+        if not already:
+            # A GPU encoder that died straight away is remembered, so the renderer
+            # that replaces this one uses the software encoder instead of failing again.
+            reason = self.encoder.gpu_failed_at_start()
+            if reason:
+                encoder_mod.mark_failed(self.s.video_encoder, reason, self.encoder.args["ffmpeg"])
         self.encoder.abort()
 
     # ---- data ----------------------------------------------------------
@@ -161,13 +170,17 @@ class StationRunner:
         if not self.theme:
             self._geocode()
         self._open_library()
-        next_weather = 0.0
         next_geocode = time.monotonic() + GEOCODE_RETRY_SECONDS
         next_weather = 0.0
         next_photo_check = 0.0
         next_touch = time.monotonic() + TOUCH_SECONDS
+        next_log_check = time.monotonic() + LOG_CHECK_SECONDS
         while not self._stop.is_set():
             now = time.monotonic()
+            if now >= next_log_check:
+                # A channel left on for weeks must not fill the disk with ffmpeg warnings.
+                next_log_check = now + LOG_CHECK_SECONDS
+                encoder_mod.rotate_log(self.encoder.log_path, in_use=True)
             if self.place is None and not self.theme and now >= next_geocode:
                 # A failed lookup (network blip at start) shouldn't disable weather for the whole run.
                 next_geocode = now + GEOCODE_RETRY_SECONDS
@@ -233,12 +246,17 @@ class StationRunner:
             for _ in range(len(photos)):
                 self._photo_i = (self._photo_i + 1) % len(photos)
                 if self._photo_i == 0 and len(photos) > 2:
+                    shown = self._shown_file
                     random.shuffle(photos)
+                    if photos[0].file == shown:
+                        # Don't open the new round with the photo that's on screen now.
+                        photos[0], photos[-1] = photos[-1], photos[0]
                     self._photos = photos
                 p = photos[self._photo_i]
                 try:
                     photo_img = fit_photo(p.file, self.comp.size)
                     credit = p.credit
+                    self._shown_file = p.file
                     break
                 except Exception as exc:
                     log.warning("%s: could not open %s: %s", self.station.name, p.file, exc)
@@ -253,6 +271,7 @@ class StationRunner:
         interval = 1.0 / fps
         k = 0
         last: Optional[bytes] = None
+        last_key = None      # what the last drawn frame showed, when it was a still one
         while not self._stop.is_set():
             due = self.started_at + k * interval
             now = time.monotonic()
@@ -263,7 +282,13 @@ class StationRunner:
             if last is None or not behind:
                 if now >= self._next_switch:
                     self._advance_photo(now)
-                last = self.comp.frame(self.panel_info(), now).tobytes()
+                info = self.panel_info()
+                # Between photo changes nothing moves, so the same bytes are sent
+                # again instead of composing an identical frame.
+                key = self.comp.static_key(info, now)
+                if last is None or key is None or key != last_key:
+                    last = self.comp.frame(info, now).tobytes()
+                last_key = key
                 self.frames_rendered += 1
             else:
                 self.frames_repeated += 1

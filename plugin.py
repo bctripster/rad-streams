@@ -9,11 +9,11 @@ only while someone is watching.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -30,12 +30,12 @@ except ImportError:  # pragma: no cover - Windows
 try:  # relative when Dispatcharr imports us as a package, absolute in tests
     from .rs import encoder, net, validate
     from .rs.channels import ChannelSync, Models
-    from .rs.config import RESOLUTIONS, VIDEO_ENCODERS, RenderSettings, parse_stations
+    from .rs.config import CPU_MODES, RESOLUTIONS, VIDEO_ENCODERS, RenderSettings, parse_stations
     from .rs.server import DEFAULT_PORT
 except ImportError:
     from rs import encoder, net, validate
     from rs.channels import ChannelSync, Models
-    from rs.config import RESOLUTIONS, VIDEO_ENCODERS, RenderSettings, parse_stations
+    from rs.config import CPU_MODES, RESOLUTIONS, VIDEO_ENCODERS, RenderSettings, parse_stations
     from rs.server import DEFAULT_PORT
 
 _log = logging.getLogger("plugins.rad_streams")
@@ -69,7 +69,7 @@ def _data_dir() -> Path:
 
 class Plugin:
     name = "Rad Streams"
-    version = "0.5.1"
+    version = "0.5.2"
     description = ("Internet radio stations as TV channels: photos of each station's city, "
                    "the current track and local weather, with the station playing underneath.")
 
@@ -89,7 +89,7 @@ class Plugin:
                                                         "1280x720", "854x480")]},
         {"id": "video_kbps", "label": "Video Bitrate (kbps)", "type": "number", "default": 3000,
          "min": 500, "max": 20000, "step": 100,
-         "help_text": "Upper limit per station. Mostly-still pictures usually use less."},
+         "help_text": "Upper limit per station. Still pictures use less with software encoding."},
         {"id": "text_pattern", "label": "Text Movement", "type": "select", "default": "cycle",
          "options": [{"value": "cycle", "label": "Cycle through 8 positions"},
                      {"value": "random", "label": "Random position each photo"},
@@ -107,6 +107,11 @@ class Plugin:
          "help_text": "A GPU takes the video encoding off the CPU. The container needs the GPU "
                       "passed through (/dev/dri, or the NVIDIA runtime). Sync tests it and uses "
                       "software encoding if it doesn't work."},
+        {"id": "cpu_mode", "label": "CPU Use", "type": "select", "default": "normal",
+         "options": [{"value": "normal", "label": "Normal (25 fps)"},
+                     {"value": "low", "label": "Low (15 fps, faster encoding)"}],
+         "help_text": "Low uses about a third less CPU per station with software encoding. "
+                      "Crossfades between photos look a little less smooth."},
         {"id": "port", "label": "Server Port", "type": "number", "default": DEFAULT_PORT,
          "min": 1024, "max": 65535, "step": 1,
          "help_text": "Local port for the channel streams (127.0.0.1 only). Change it if something else uses it."},
@@ -174,6 +179,15 @@ class Plugin:
         port = self._port(settings)
         render = self._render_settings(settings)
         has_ffmpeg = bool(shutil.which("ffmpeg"))
+        if parsed.stations and has_ffmpeg:
+            # Check the port before anything is written: the channels are about to
+            # be pointed at it, and a port the server can't open would leave every
+            # channel dead while Sync reported success.
+            busy = self._port_problem(port)
+            if busy:
+                return {"status": "error",
+                        "message": f"Port {port} can't be used ({busy}). Nothing was changed. "
+                                   "Pick another Server Port and Sync again."}
         # Without ffmpeg, don't mark the server wanted, so a restart doesn't launch a doomed one.
         self._write_service_config(parsed.stations, render, port,
                                    desired=bool(parsed.stations) and has_ffmpeg)
@@ -268,9 +282,31 @@ class Plugin:
     def _port(self, settings: Dict[str, Any]) -> int:
         return self._int(settings.get("port"), DEFAULT_PORT, 1024, 65535)
 
+    def _port_problem(self, port: int) -> Optional[str]:
+        """Why the stream server couldn't listen on ``port``, or None if it can.
+
+        Our own running server already holding the port is fine. Otherwise the
+        port is opened and closed again, the same way the server opens it.
+        """
+        if self._service_pid():
+            status = net.read_json(str(self.status_path)) or {}
+            if status.get("running") and status.get("port") == port:
+                return None
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # As http.server does, so a port in TIME_WAIT isn't reported as busy.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(("127.0.0.1", port))
+        except OSError as exc:
+            return exc.strerror or str(exc)
+        finally:
+            probe.close()
+        return None
+
     def _render_settings(self, settings: Dict[str, Any]) -> RenderSettings:
         res = settings.get("resolution") if settings.get("resolution") in RESOLUTIONS else "1920x1080"
         pattern = settings.get("text_pattern")
+        output_fps, preset = CPU_MODES.get(settings.get("cpu_mode"), CPU_MODES["normal"])
         return RenderSettings.from_resolution(
             res,
             units="C" if str(settings.get("units", "F")).upper().startswith("C") else "F",
@@ -279,6 +315,8 @@ class Plugin:
             credit_seconds=0.0 if settings.get("credit_mode") == "always" else 5.0,
             video_encoder=(settings.get("video_encoder")
                            if settings.get("video_encoder") in VIDEO_ENCODERS else "software"),
+            output_fps=output_fps,
+            x264_preset=preset,
             data_dir=str(self.data_dir),
         )
 
@@ -490,7 +528,10 @@ class Plugin:
             try:
                 os.killpg(pid, signal.SIGTERM)
             except OSError:
-                os.kill(pid, signal.SIGTERM)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass       # it exited between the check and the signal
             deadline = time.time() + 10
             while time.time() < deadline and self._service_pid():
                 time.sleep(0.25)
