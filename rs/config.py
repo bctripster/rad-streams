@@ -26,6 +26,15 @@ VIDEO_ENCODERS = ("software", "vaapi", "qsv", "nvenc")
 # Optional "key=value" columns after the Channel # column.
 OPTION_KEYS = ("id", "logo")
 MAX_ID_LENGTH = 100
+# Dispatcharr's name columns hold 255 characters, and a stream is named
+# "Rad Streams: <name> | Live from <city>", so both parts are limited here.
+MAX_NAME_LENGTH = 120
+MAX_CITY_LENGTH = 100
+
+# "CPU Use" setting -> (frames per second ffmpeg emits, libx264 preset).
+# "low" trades a little crossfade smoothness and sharpness for about a third less CPU.
+CPU_MODES = {"normal": (25, "veryfast"), "low": (15, "superfast")}
+X264_PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium")
 MAX_LOGO_URL_LENGTH = 1000
 
 
@@ -114,11 +123,17 @@ def parse_stations(text: str) -> ParseResult:
         if not name:
             result.errors.append(f"line {line_no}: missing station name")
             continue
+        if len(name) > MAX_NAME_LENGTH:
+            result.errors.append(f"line {line_no}: station name is longer than {MAX_NAME_LENGTH} characters")
+            continue
         if not re.match(r"^https?://", url, re.I):
             result.errors.append(f"line {line_no}: stream URL must start with http:// or https://")
             continue
         if not city:
             result.errors.append(f"line {line_no}: missing city")
+            continue
+        if len(city) > MAX_CITY_LENGTH:
+            result.errors.append(f"line {line_no}: city is longer than {MAX_CITY_LENGTH} characters")
             continue
         number: Optional[float] = None
         if number_raw:
@@ -167,6 +182,7 @@ class RenderSettings:
     image_refresh_hours: float = 12.0  # each refresh swaps in up to half new photos
     weather_refresh_minutes: float = 15.0
     video_encoder: str = "software"  # one of VIDEO_ENCODERS
+    x264_preset: str = "veryfast"    # software encoder speed, one of X264_PRESETS
     data_dir: str = DEFAULT_DATA_DIR
 
     @classmethod

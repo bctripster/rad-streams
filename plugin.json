@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Rad Streams",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Internet radio stations as TV channels: photos of each station's city, the current track and local weather, with the station playing underneath.",
   "author": "Bob",
   "capabilities": [
@@ -75,7 +75,7 @@
       "min": 500,
       "max": 20000,
       "step": 100,
-      "help_text": "Upper limit per station. Mostly-still pictures usually use less."
+      "help_text": "Upper limit per station. Still pictures use less with software encoding."
     },
     {
       "id": "text_pattern",
@@ -139,6 +139,23 @@
         }
       ],
       "help_text": "A GPU takes the video encoding off the CPU. The container needs the GPU passed through (/dev/dri, or the NVIDIA runtime). Sync tests it and uses software encoding if it doesn't work."
+    },
+    {
+      "id": "cpu_mode",
+      "label": "CPU Use",
+      "type": "select",
+      "default": "normal",
+      "options": [
+        {
+          "value": "normal",
+          "label": "Normal (25 fps)"
+        },
+        {
+          "value": "low",
+          "label": "Low (15 fps, faster encoding)"
+        }
+      ],
+      "help_text": "Low uses about a third less CPU per station with software encoding. Crossfades between photos look a little less smooth."
     },
     {
       "id": "port",

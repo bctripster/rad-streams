@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -47,6 +48,9 @@ GUIDE_PROPERTIES = {
     "include_date": False,
     "timezone": "UTC",
 }
+
+# A stream this plugin made points at the local stream server's route for one station.
+_OUR_STREAM_URL = re.compile(r"^http://127\.0\.0\.1:\d{1,5}/radio/[a-z0-9-]+\.ts$")
 
 log = logging.getLogger("rad_streams.channels")
 
@@ -130,6 +134,49 @@ class ChannelSync:
         if exclude_id:
             q = q.exclude(id=exclude_id)
         return q.first()
+
+    # ---- channel and stream ownership --------------------------------------
+    # channels.json only remembers ids. After the Dispatcharr database is reset,
+    # restored from a backup or moved, those ids can belong to someone else's
+    # channels, so a saved id is only trusted when the row itself looks like ours.
+    def _is_our_stream(self, stream) -> bool:
+        """True if ``stream`` is one this plugin created (by its URL or its name)."""
+        if stream is None:
+            return False
+        url = str(getattr(stream, "url", "") or "")
+        name = str(getattr(stream, "name", "") or "")
+        return bool(_OUR_STREAM_URL.match(url)) or name.startswith(STREAM_PREFIX)
+
+    def _is_our_channel(self, channel, group=None) -> bool:
+        """True if ``channel`` is one this plugin created.
+
+        It is ours when it sits in the Rad Streams group, or (if someone moved
+        it to another group) when it is still linked to one of our streams.
+        """
+        if channel is None:
+            return False
+        if group is None:
+            group = self.m.ChannelGroup.objects.filter(name=GROUP_NAME).first()
+        if group is not None and getattr(channel, "channel_group_id", None) == group.id:
+            return True
+        try:
+            links = self.m.ChannelStream.objects.filter(channel=channel)
+            return any(self._is_our_stream(link.stream) for link in links)
+        except Exception:      # can't tell: never touch a channel we can't confirm
+            return False
+
+    def _owned(self, model, obj_id, group=None) -> Optional[Any]:
+        """The row a saved id points at, or None if it's gone or isn't ours."""
+        obj = self._get(model, obj_id)
+        if obj is None:
+            return None
+        ours = (self._is_our_channel(obj, group) if model is self.m.Channel
+                else self._is_our_stream(obj))
+        if not ours:
+            log.warning("saved %s id %s now belongs to something else (%r); leaving it alone",
+                        model.__name__, obj_id, getattr(obj, "name", "?"))
+            return None
+        return obj
 
     # ---- guide ownership -------------------------------------------------
     def _guide_state_path(self) -> str:
@@ -241,7 +288,8 @@ class ChannelSync:
                 continue
             failed = False
             for model, key in ((self.m.Channel, "channel_id"), (self.m.Stream, "stream_id")):
-                obj = self._get(model, entry.get(key))
+                # Only rows that are still ours: a stale id is skipped, not deleted.
+                obj = self._owned(model, entry.get(key), group)
                 if obj is not None:
                     try:
                         obj.delete()
@@ -256,9 +304,11 @@ class ChannelSync:
         for st in stations:
             url = url_for(st)
             entry = mapping.get(st.station_id, {})
-            stream = self._get(self.m.Stream, entry.get("stream_id")) or \
+            # A saved id is used only if the row is still ours (see _owned); otherwise
+            # the station gets a fresh channel and the other row is left untouched.
+            stream = self._owned(self.m.Stream, entry.get("stream_id")) or \
                 self.m.Stream.objects.filter(url=url).first()
-            channel = self._get(self.m.Channel, entry.get("channel_id"))
+            channel = self._owned(self.m.Channel, entry.get("channel_id"), group)
             if channel is None and stream is not None:
                 channel = self._channel_for(stream)   # mapping lost: find the channel through its stream
             changed = False
@@ -351,16 +401,22 @@ class ChannelSync:
             return None
 
     def remove_all(self) -> int:
-        """Delete every channel/stream this plugin created."""
+        """Delete every channel/stream this plugin created. Returns how many stations were removed."""
         mapping = self._mapping()
+        group = self.m.ChannelGroup.objects.filter(name=GROUP_NAME).first()
+        removed = 0
         for entry in mapping.values():
+            found = False
+            # The channel first: its link to our stream is one of the ownership checks.
             for model, key in ((self.m.Channel, "channel_id"), (self.m.Stream, "stream_id")):
-                obj = self._get(model, entry.get(key))
+                obj = self._owned(model, entry.get(key), group)   # never someone else's row
                 if obj is not None:
                     obj.delete()
+                    found = True
+            removed += found
         net.write_json(self.mapping_path, {})
         self._remove_guide()
-        return len(mapping)
+        return removed
 
     def _remove_guide(self) -> None:
         """Delete the plugin's EPG source (its entry goes with it). Logos are left,

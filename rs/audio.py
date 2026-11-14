@@ -158,8 +158,8 @@ def resolve_stream(url: str, depth: int = 0) -> tuple[str, bool]:
         return url, True
     if depth > 2 or not path.endswith((".pls", ".m3u")):
         return url, False
-    r = net.session().get(url, timeout=net.TIMEOUT)
-    r.raise_for_status()
+    # Capped: a URL ending .pls/.m3u is sometimes the live stream itself.
+    r = net.fetch_limited(url, net.MAX_PLAYLIST_BYTES, deadline=20.0)
     if hls.looks_like_hls(r.text):
         return r.url, True  # an HLS playlist saved as .m3u; the HLS client takes it from here
     for line in r.text.splitlines():
@@ -448,7 +448,8 @@ class _IcyResponse:
         self._sock = socket.create_connection((u.hostname, port), timeout=timeout[0])
         self._sock.settimeout(timeout[1])
         path = (u.path or "/") + (f"?{u.query}" if u.query else "")
-        lines = [f"GET {path} HTTP/1.0", f"Host: {u.hostname}"] + [f"{k}: {v}" for k, v in headers.items()]
+        host = u.hostname if port == 80 else f"{u.hostname}:{port}"   # the port is part of Host unless it's the default
+        lines = [f"GET {path} HTTP/1.0", f"Host: {host}"] + [f"{k}: {v}" for k, v in headers.items()]
         self._sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
         self.raw = self._sock.makefile("rb")
         status = self.raw.readline(1024).decode("latin-1").strip()

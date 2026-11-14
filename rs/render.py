@@ -247,6 +247,7 @@ class Compositor:
         self._credit_prev: Optional[Image.Image] = None
         self._panel_key = None
         self._panel: Optional[Image.Image] = None
+        self._shows = 0     # counts show() calls, so each picture has its own static_key
         self.motion.jump(0.0, 60.0, only=SPLASH_PRESETS)
 
     def _splash_view(self) -> Image.Image:
@@ -259,6 +260,7 @@ class Compositor:
     def show(self, photo: Optional[Image.Image], credit: Optional[str], now: float, span: float) -> None:
         """Crossfade to ``photo`` (or the fallback) and move the text."""
         self.previous = self.current
+        self._shows += 1
         self.on_splash = photo is None
         if photo is None:
             self._splash_i += 1
@@ -277,6 +279,23 @@ class Compositor:
             self._panel = build_panel(info, self.fonts, self.size[0], self.accent)
             self._panel_key = key
         return self._panel
+
+    def static_key(self, info: PanelInfo, now: float) -> Optional[tuple]:
+        """What ``frame(info, now)`` would show, when that is a still picture; else None.
+
+        Two calls returning equal keys draw identical frames, so the caller
+        can reuse the earlier one. None while a crossfade or the credit's
+        fade is in progress (every frame differs then).
+        """
+        t = (now - self.fade_start) / self.crossfade if self.crossfade > 0 else 1.0
+        if self.previous is not None and t < 1.0:
+            return None                      # crossfading
+        if t < 0.0:
+            return None                      # a clock oddity: just draw
+        alpha = self._credit_alpha(now, 1.0) if self._credit_img is not None else 0.0
+        if 0.0 < alpha < 1.0:
+            return None                      # the credit is fading out
+        return (self.fade_start, self._shows, info.key(), self.motion.preset, alpha >= 1.0)
 
     def frame(self, info: PanelInfo, now: float) -> Image.Image:
         t = (now - self.fade_start) / self.crossfade if self.crossfade > 0 else 1.0
