@@ -92,7 +92,6 @@ def test_sync_failure_part_way_keeps_mapping(tmp_path):
 @pytest.fixture
 def plugin(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin_mod, "_data_dir", lambda: tmp_path / "data")
-    monkeypatch.setattr(plugin_mod.Plugin, "_schedule_autostart", lambda self: None)
     models = make_models()
     monkeypatch.setattr(plugin_mod.Plugin, "_models", staticmethod(lambda: models))
     p = plugin_mod.Plugin()

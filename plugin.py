@@ -41,7 +41,6 @@ except ImportError:
 _log = logging.getLogger("plugins.rad_streams")
 
 _AUTOSTART_DELAY_SEC = 20
-_AUTOSTART_SCHEDULED = False
 _MESSAGE_LIMIT = 280
 
 _STATIONS_HELP = (
@@ -69,7 +68,7 @@ def _data_dir() -> Path:
 
 class Plugin:
     name = "Rad Streams"
-    version = "0.5.2"
+    version = "0.5.3"
     description = ("Internet radio stations as TV channels: photos of each station's city, "
                    "the current track and local weather, with the station playing underneath.")
 
@@ -142,7 +141,6 @@ class Plugin:
         self.status_path = self.data_dir / "status.json"
         self.mapping_path = self.data_dir / "channels.json"
         self.log_dir = self.data_dir / "logs"
-        self._schedule_autostart()
 
     # ---- entry points ----------------------------------------------------
     def run(self, action: str, params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -550,30 +548,44 @@ class Plugin:
             lock.close()
 
     # ---- auto-start after Dispatcharr restarts ----------------------------
-    def _schedule_autostart(self) -> None:
-        global _AUTOSTART_SCHEDULED
-        if _AUTOSTART_SCHEDULED or os.environ.get("RS_RUN_TOKEN"):
-            return
-        _AUTOSTART_SCHEDULED = True
-        threading.Thread(target=self._autostart, name="rad-streams-autostart", daemon=True).start()
+    # Dispatcharr 0.34+ builds a Plugin in every worker process, so nothing may
+    # start in __init__. Instead it elects one process cluster-wide and calls
+    # on_leader_acquired there (needs the persistent_service capability). The
+    # stream server itself is a separate OS process shared by every worker, so
+    # the leader's only job is to relaunch it after a restart or an update; the
+    # lock file and pid token still stop two leaders (e.g. no Redis) from
+    # starting two servers.
+    def on_leader_acquired(self, context: Dict[str, Any]) -> None:
+        """Run the one-shot auto-start in a Dispatcharr-owned service thread."""
+        if os.environ.get("RS_RUN_TOKEN"):
+            return   # never inside our own server process
+        context["start_service"](self._leader_service, name="autostart")
+
+    def on_leader_lost(self, context: Dict[str, Any]) -> None:
+        """Nothing to tear down: the stream server outlives a lease handover.
+
+        Disable, delete and reload go through stop(), which stops it when needed.
+        """
+
+    def _leader_service(self, stop_event: threading.Event) -> None:
+        """Auto-start once, then idle until Dispatcharr stops the service.
+
+        Returning early would count as an unexpected exit and cost the lease,
+        so the thread waits on stop_event (a cheap, interruptible wait).
+        """
+        if stop_event.wait(_AUTOSTART_DELAY_SEC):
+            return   # stopped before Dispatcharr finished starting up
+        self._autostart()
+        stop_event.wait()
 
     def _autostart(self) -> None:
-        time.sleep(_AUTOSTART_DELAY_SEC)
+        """Relaunch the server if it was running before (desired_running)."""
         try:
             data = net.read_json(str(self.config_path)) or {}
             if not data.get("desired_running") or not data.get("stations"):
                 return
-            from apps.plugins.models import PluginConfig
-            cfg = PluginConfig.objects.filter(key=self.base_dir.name).first()
-            if cfg is not None and not cfg.enabled:
-                return
+            # Leader hooks only run for enabled plugins, so no DB check is needed.
             if self._ensure_service():
                 _log.info("Rad Streams auto-start: server relaunched")
         except Exception:
             _log.exception("Rad Streams auto-start failed")
-        finally:
-            try:
-                from django.db import close_old_connections
-                close_old_connections()
-            except Exception:
-                pass
