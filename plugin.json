@@ -1,10 +1,11 @@
 {
   "manifest_version": 2,
   "name": "Rad Streams",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Internet radio stations as TV channels: photos of each station's city, the current track and local weather, with the station playing underneath.",
   "author": "Bob",
   "capabilities": [
+    "background_tasks",
     "filesystem_write",
     "network_listener",
     "outbound_network",
@@ -16,14 +17,56 @@
       "id": "setup_info",
       "label": "Setup",
       "type": "info",
-      "description": "Enter your stations below, then press Sync Stations. Each station becomes a channel in the Rad Streams group. Channels render only while someone is watching. Validate checks every stream and city and writes a full report to /data/rad_streams/logs/validate.log."
+      "description": "Add your stations to the table below, press Save Settings, then press Sync Stations. Each station becomes a channel in the Rad Streams group. Channels render only while someone is watching. Sync and Validate run in the background with a progress bar; each saves a full report in /data/rad_streams/reports (the latest is also in /data/rad_streams/logs)."
     },
     {
-      "id": "stations",
+      "id": "stations_help",
       "label": "Stations",
-      "type": "text",
-      "default": "",
-      "help_text": "One station per line: Name | Stream URL | City | Channel # (optional). Example: KEXP | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501. Use 'City, ST' or 'City, Country' when a city name is ambiguous. For photos of a subject instead of a city (no weather), put Theme: and a name in the City column, e.g. Theme: Space. Built in: Space, Earth, Nature, Ocean, Mountains, Forest, Waterfalls, Desert, Aurora, Sunsets, Beaches, Lakes, Wildlife, Night Sky; any other word is searched on Wikimedia Commons. Icecast/Shoutcast, .pls/.m3u and HLS (.m3u8) stream URLs all work. Optional extra columns: id=<old name> keeps a station's channel when you rename it, and logo=<image URL> sets its channel logo (default: the Rad Streams logo). Example: KEXP Seattle | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501 | id=KEXP. Lines starting with # are ignored. Press Sync Stations after editing."
+      "type": "info",
+      "description": "One row per station. Name, Stream URL and City or Theme are required. City: use 'City, ST' or 'City, Country' when a name is ambiguous, e.g. Seattle, WA. Theme: put Theme: and a subject in the City column for photos of that subject instead (no weather), e.g. Theme: Space. Built in: Space, Earth, Nature, Ocean, Mountains, Forest, Waterfalls, Desert, Aurora, Sunsets, Beaches, Lakes, Wildlife, Night Sky; any other word is searched on Wikimedia Commons. Channel # is optional (blank picks one from 1000 up). Keep ID: when you rename a station, put its old name here so it keeps its channel. Logo URL: an http(s) image for the channel logo (blank = the Rad Streams logo). Skip: tick to take a station off without deleting its row. Icecast/Shoutcast, .pls/.m3u and HLS (.m3u8) stream URLs all work. Save, then press Sync Stations: Sync checks every cell and changes nothing until every row is right."
+    },
+    {
+      "id": "station_table",
+      "label": "Stations",
+      "type": "table",
+      "default": [],
+      "columns": [
+        {
+          "id": "name",
+          "label": "Name",
+          "type": "string"
+        },
+        {
+          "id": "url",
+          "label": "Stream URL",
+          "type": "string"
+        },
+        {
+          "id": "city",
+          "label": "City or Theme",
+          "type": "string"
+        },
+        {
+          "id": "number",
+          "label": "Channel #",
+          "type": "string"
+        },
+        {
+          "id": "id",
+          "label": "Keep ID",
+          "type": "string"
+        },
+        {
+          "id": "logo",
+          "label": "Logo URL",
+          "type": "string"
+        },
+        {
+          "id": "skip",
+          "label": "Skip",
+          "type": "boolean"
+        }
+      ]
     },
     {
       "id": "units",
@@ -40,44 +83,6 @@
           "label": "Celsius (°C, km/h)"
         }
       ]
-    },
-    {
-      "id": "resolution",
-      "label": "Resolution",
-      "type": "select",
-      "default": "1920x1080",
-      "options": [
-        {
-          "value": "3840x2160",
-          "label": "3840x2160"
-        },
-        {
-          "value": "2560x1440",
-          "label": "2560x1440"
-        },
-        {
-          "value": "1920x1080",
-          "label": "1920x1080"
-        },
-        {
-          "value": "1280x720",
-          "label": "1280x720"
-        },
-        {
-          "value": "854x480",
-          "label": "854x480"
-        }
-      ]
-    },
-    {
-      "id": "video_kbps",
-      "label": "Video Bitrate (kbps)",
-      "type": "number",
-      "default": 3000,
-      "min": 500,
-      "max": 20000,
-      "step": 100,
-      "help_text": "Upper limit per station. Still pictures use less with software encoding."
     },
     {
       "id": "text_pattern",
@@ -118,10 +123,74 @@
       "help_text": "Photo and weather licences require a credit; brief shows it when each photo appears, then fades it out."
     },
     {
+      "id": "cpu_mode",
+      "label": "CPU Use",
+      "type": "select",
+      "default": "normal",
+      "options": [
+        {
+          "value": "normal",
+          "label": "Normal (25 fps)"
+        },
+        {
+          "value": "low",
+          "label": "Low (15 fps, faster encoding)"
+        }
+      ],
+      "help_text": "Low uses about a third less CPU per station with software encoding. Crossfades between photos look a little less smooth."
+    },
+    {
+      "id": "advanced",
+      "label": "Advanced",
+      "type": "section",
+      "collapsed": true
+    },
+    {
+      "id": "resolution",
+      "label": "Resolution",
+      "type": "select",
+      "default": "1920x1080",
+      "section": "advanced",
+      "options": [
+        {
+          "value": "3840x2160",
+          "label": "3840x2160"
+        },
+        {
+          "value": "2560x1440",
+          "label": "2560x1440"
+        },
+        {
+          "value": "1920x1080",
+          "label": "1920x1080"
+        },
+        {
+          "value": "1280x720",
+          "label": "1280x720"
+        },
+        {
+          "value": "854x480",
+          "label": "854x480"
+        }
+      ]
+    },
+    {
+      "id": "video_kbps",
+      "label": "Video Bitrate (kbps)",
+      "type": "number",
+      "default": 3000,
+      "min": 500,
+      "max": 20000,
+      "step": 100,
+      "section": "advanced",
+      "help_text": "Upper limit per station. Still pictures use less with software encoding."
+    },
+    {
       "id": "video_encoder",
       "label": "Video Encoding",
       "type": "select",
       "default": "software",
+      "section": "advanced",
       "options": [
         {
           "value": "software",
@@ -143,23 +212,6 @@
       "help_text": "A GPU takes the video encoding off the CPU. The container needs the GPU passed through (/dev/dri, or the NVIDIA runtime). Sync tests it and uses software encoding if it doesn't work."
     },
     {
-      "id": "cpu_mode",
-      "label": "CPU Use",
-      "type": "select",
-      "default": "normal",
-      "options": [
-        {
-          "value": "normal",
-          "label": "Normal (25 fps)"
-        },
-        {
-          "value": "low",
-          "label": "Low (15 fps, faster encoding)"
-        }
-      ],
-      "help_text": "Low uses about a third less CPU per station with software encoding. Crossfades between photos look a little less smooth."
-    },
-    {
       "id": "port",
       "label": "Server Port",
       "type": "number",
@@ -167,6 +219,7 @@
       "min": 1024,
       "max": 65535,
       "step": 1,
+      "section": "advanced",
       "help_text": "Local port for the channel streams (127.0.0.1 only). Change it if something else uses it."
     }
   ],
@@ -176,14 +229,16 @@
       "label": "Sync Stations",
       "button_label": "Sync",
       "button_color": "green",
-      "description": "Create, update and remove channels to match the station list, and start the stream server."
+      "async": true,
+      "description": "Check the stations table, then create, update and remove channels to match it and start the stream server. Runs in the background."
     },
     {
       "id": "validate",
       "label": "Validate",
       "button_label": "Validate",
       "button_color": "blue",
-      "description": "Check each stream, its track titles, the city and available photos."
+      "async": true,
+      "description": "Check each stream, its track titles, the city and available photos. Runs in the background and saves a full report."
     },
     {
       "id": "status",

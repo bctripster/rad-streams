@@ -2,14 +2,17 @@
 
 For each station: is the stream reachable, does it send ICY titles, does the
 city resolve, and are there usable photos. Stations are checked in parallel
-with hard time limits so the action returns while the UI is still waiting.
+with hard time limits. Since v0.6.0 Validate runs as a Dispatcharr background
+task, so the overall limit grows with the number of stations instead of being
+squeezed into the few seconds an awaited button press allows.
 """
 from __future__ import annotations
 
 import concurrent.futures as cf
+import math
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -17,7 +20,20 @@ from . import audio, geo, hls, images, net, themes
 from .config import Station
 
 STREAM_SECONDS = 12      # max time listening for an ICY title
-TOTAL_SECONDS = 40       # whole validation budget
+TOTAL_SECONDS = 40       # whole-run budget floor (and the old fixed budget)
+STATION_SECONDS = 45     # budget per round of WORKERS stations checked in parallel
+MAX_TOTAL_SECONDS = 900  # never let one Validate run longer than this
+WORKERS = 8
+
+
+def budget_for(count: int) -> float:
+    """Seconds a Validate of ``count`` stations may take in total.
+
+    Stations are checked ``WORKERS`` at a time, and one station's checks
+    (stream, title, city, photos) take up to about ``STATION_SECONDS``.
+    """
+    rounds = math.ceil(max(count, 1) / WORKERS)
+    return float(min(MAX_TOTAL_SECONDS, max(TOTAL_SECONDS, STATION_SECONDS * rounds)))
 
 
 @dataclass
@@ -153,15 +169,39 @@ def validate_station(station: Station, cache_dir: Optional[str]) -> StationRepor
 
 
 def validate_all(stations: list[Station], cache_dir: Optional[str],
-                 budget: float = TOTAL_SECONDS) -> list[StationReport]:
+                 budget: Optional[float] = None,
+                 on_done: Optional[Callable[[int, int, StationReport], None]] = None
+                 ) -> list[StationReport]:
+    """Check every station, ``WORKERS`` at a time, within ``budget`` seconds.
+
+    ``budget`` defaults to ``budget_for(len(stations))``. ``on_done(done,
+    total, report)`` is called in the caller's thread as each station
+    finishes, for a progress bar; an error in it is ignored. A station still
+    running when the budget ends gets a "did not finish" problem.
+    """
+    if budget is None:
+        budget = budget_for(len(stations))
     reports: dict[int, StationReport] = {}
-    pool = cf.ThreadPoolExecutor(max_workers=min(8, max(1, len(stations))))
+    if not stations:
+        return []
+    pool = cf.ThreadPoolExecutor(max_workers=min(WORKERS, len(stations)))
     futures = {pool.submit(validate_station, s, cache_dir): i for i, s in enumerate(stations)}
     try:
         for fut in cf.as_completed(futures, timeout=budget):
-            reports[futures[fut]] = fut.result()
+            i = futures[fut]
+            try:
+                reports[i] = fut.result()
+            except Exception as exc:          # validate_station catches its own; belt and braces
+                reports[i] = StationReport(stations[i])
+                reports[i].problem(f"check failed ({type(exc).__name__}: {exc})")
+            if on_done is not None:
+                try:
+                    on_done(len(reports), len(stations), reports[i])
+                except Exception:
+                    pass                      # a progress bar never fails a Validate
     except cf.TimeoutError:
         pass
+    # Don't wait for stragglers: their sockets have their own timeouts.
     pool.shutdown(wait=False, cancel_futures=True)
     out = []
     for i, s in enumerate(stations):
@@ -171,6 +211,13 @@ def validate_all(stations: list[Station], cache_dir: Optional[str],
             rep.problem(f"checks did not finish within {budget:.0f}s")
         out.append(rep)
     return out
+
+
+def as_dicts(reports: list[StationReport]) -> list[dict]:
+    """JSON-ready reports, kept in Dispatcharr's task history with the result."""
+    return [{"name": r.station.name, "city": r.station.city, "stream_url": r.station.stream_url,
+             "row": r.station.line_no, "ok": r.ok, "problems": list(r.problems),
+             "notes": list(r.notes)} for r in reports]
 
 
 def format_report(reports: list[StationReport], parse_errors: list[str]) -> str:

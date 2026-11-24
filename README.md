@@ -15,57 +15,64 @@ space or nature, without the city and weather.
 1. Copy the `rad_streams` folder to `/app/data/plugins/rad_streams/` in your Dispatcharr container.
 2. In Dispatcharr, open **Plugins**, reload if needed, and enable **Rad Streams**. Dispatcharr 0.34 or newer
    is required. When you enable it (or install an update that adds one), Dispatcharr lists the access the plugin
-   asks for; approve all five:
+   asks for; approve all six:
    - **Run host processes** (`subprocess`): the stream server and FFmpeg.
    - **Listen for network connections** (`network_listener`): the server on 127.0.0.1 (Dispatcharr asks for a restart the first time).
    - **Access external network services** (`outbound_network`): radio streams, photos, weather and Validate.
    - **Write outside plugin storage** (`filesystem_write`): its files in `/data/rad_streams/` and the logo in `/data/logos/`.
    - **Run a persistent background service** (`persistent_service`): relaunches the server after Dispatcharr restarts.
-3. Enter your stations in the **Stations** box, one per line:
+   - **Run background tasks** (`background_tasks`, new in 0.6.0): Sync and Validate run in the background with a progress bar.
+3. Add your stations to the **Stations** table, one row each (press **Add row**), then press **Save Settings**:
 
-   ```
-   Name | Stream URL | City | Channel # (optional)
-   KEXP | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501
-   SomaFM Groove Salad | https://ice1.somafm.com/groovesalad-128-mp3 | San Francisco, CA
-   ```
+   | Name | Stream URL | City or Theme | Channel # |
+   | --- | --- | --- | --- |
+   | KEXP | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501 |
+   | SomaFM Groove Salad | https://ice1.somafm.com/groovesalad-128-mp3 | San Francisco, CA | |
+
+   Name, Stream URL and City or Theme are required; Channel # is optional (blank picks one from 1000 up).
 
    Use `City, Region` or `City, Country` when a name is ambiguous: US states, Canadian provinces and
    Australian states work by name or abbreviation (`Portland, ME`, `Vancouver, BC`, `Perth, WA, Australia`, `Paris, France`).
    For a channel that isn't about a city, put `Theme:` and a subject in the City column. A theme
    channel shows photos of that subject; its panel shows just the station and track, with no place,
-   theme name or weather:
-
-   ```
-   Groove Salad | https://ice1.somafm.com/groovesalad-128-mp3 | Theme: Nature
-   Space Station Soma | https://ice1.somafm.com/spacestation-128-mp3 | Theme: Space
-   ```
+   theme name or weather, for example `Theme: Nature` or `Theme: Space`.
 
    Built-in themes have search terms picked for good photos: Space, Earth, Nature, Ocean, Mountains,
    Forest, Waterfalls, Desert, Aurora, Sunsets, Beaches, Lakes, Wildlife and Night Sky. Any other word
    (`Theme: Trains`, `Theme: Lighthouses`) is searched on Wikimedia Commons, trying a plural in the singular too
    (`Lighthouses` also finds `Lighthouse`). Space, Earth, Night Sky and Aurora also pull public-domain photos
    from the NASA Image Library. No photographer fills more than a few spots in a set.
-   Lines starting with `#` are ignored. Icecast/Shoutcast streams (including old Shoutcast v1 servers), `.pls`/`.m3u` playlist links and
+   Tick **Skip** to take a station off the air without deleting its row. Icecast/Shoutcast streams (including old Shoutcast v1 servers), `.pls`/`.m3u` playlist links and
    HLS (`.m3u8`) streams all work. HLS track titles come from the playlist or the segments' ID3 tags;
    encrypted and fMP4 HLS streams aren't supported.
 4. Press **Validate** to check every stream, its track titles, the city and available photos.
 5. Press **Sync Stations**. Channels appear in the Rad Streams group, and the stream server starts.
 
+Sync and Validate run as Dispatcharr background tasks: the button returns straight away, a progress bar
+shows how far along they are, and a pop-up gives the result. Each run saves a full report (see Actions).
+Sync first checks every cell of the table. If any is wrong it changes nothing and names the row and column,
+for example `row 3 (KEXP), Stream URL: stream URL must start with http:// or https://`. Dispatcharr itself
+checks each cell's type when you press Save Settings; the rest is checked when Sync or Validate starts,
+because Dispatcharr gives plugins no hook into Save.
+
 After updating the plugin files, press **Sync Stations** once: it restarts the stream server so the new code takes effect.
 
-Sync again after any edit. It creates, updates and removes channels to match the list.
+Sync again after any edit. It creates, updates and removes channels to match the table. An empty table
+never deletes channels (that is usually an accident); use **Remove All Channels**, or tick Skip on every row.
 
-### Optional columns: `id=` and `logo=`
+### Optional columns: Keep ID and Logo URL
 
-After the Channel # column you can add `id=` and `logo=`, in either order. The Channel # column can be left empty (`| |`) or left out:
+- **Keep ID** keeps a station's channel when you rename it. A station's id comes from its name, so a plain rename makes a new channel (and the old one, with its number and favourites, is removed). To rename, put the **old** name in Keep ID, then change the name. Putting the current name there changes nothing, so it's safe to fill in before you need it.
+- **Logo URL** sets the channel's logo from an `http://` or `https://` image URL. Without it, channels get the Rad Streams logo, which Sync copies to `/data/logos/rad-streams.png`.
 
-```
-KEXP Seattle | https://kexp.streamguys1.com/kexp160.aac | Seattle, WA | 501 | id=KEXP
-SomaFM Groove Salad | https://ice1.somafm.com/groovesalad-128-mp3 | San Francisco, CA | | logo=https://example.com/groove-salad.png
-```
+### Upgrading from the old Stations text box (before 0.6.0)
 
-- **`id=`** keeps a station's channel when you rename it. A station's id comes from its name, so a plain rename makes a new channel (and the old one, with its number and favourites, is removed). To rename, add `id=` with the **old** name, then change the name. Adding `id=<current name>` to an existing station changes nothing, so it's safe to add it before you need it.
-- **`logo=`** sets the channel's logo from an `http://` or `https://` image URL. Without it, channels get the Rad Streams logo, which Sync copies to `/data/logos/rad-streams.png`.
+Up to 0.5.3 stations were typed into one text box as `Name | Stream URL | City | Channel # | id=… | logo=…`
+lines. 0.6.0 copies that list into the table the first time it loads, so the table opens already filled in and
+Sync and Validate use it straight away. Every station keeps its channel (its id is worked out exactly as
+before). A line that was commented out with `#` arrives with Skip ticked, plain `#` comments are dropped, and a
+line that couldn't be split into columns lands whole in the Name cell with a note above the table. Check the
+table and press **Save Settings** to keep it. The old text stays in the saved settings, untouched, as a backup.
 
 ### Guide and logos
 
@@ -80,20 +87,32 @@ Dispatcharr's Dummy EPG form are put back at the next Sync. Remove All Channels 
 
 | Setting | What it does |
 | --- | --- |
-| Stations | The station list (see above). |
+| Stations | The station table (see above). |
 | Temperature Units | °F/mph or °C/km/h. |
-| Resolution | 480p up to 4K. Default 1080p. |
-| Video Bitrate | Upper limit per station. With software encoding the picture is encoded to a quality level, so still photos use less than the limit. |
 | Text Movement | Burn-in protection: the text moves to a new spot on every photo change (once a minute), cycling through 8 positions, random, or corners only. It holds still in between. |
 | Photo Credits | Brief (default) shows the photo and weather credit for 5 seconds when each photo appears, then fades it out. Always keeps it on screen. The licences require a credit, so it can't be turned off. |
-| Video Encoding | Software (default) or a GPU: VAAPI (Intel/AMD), Intel Quick Sync, or NVIDIA NVENC. The GPU has to be passed through to the Dispatcharr container (`/dev/dri` for Intel/AMD, the NVIDIA container runtime for NVIDIA). Sync tests the GPU and falls back to software encoding, with a warning, if it doesn't work. Status shows which one is in use. |
 | CPU Use | Normal (default) sends 25 frames a second. Low sends 15 and uses a faster encoder preset, which takes about a third less CPU per station with software encoding. Crossfades look a little less smooth. |
+
+The **Advanced** section, collapsed until you open it, holds the rest:
+
+| Setting | What it does |
+| --- | --- |
+| Resolution | 480p up to 4K. Default 1080p. |
+| Video Bitrate | Upper limit per station. With software encoding the picture is encoded to a quality level, so still photos use less than the limit. |
+| Video Encoding | Software (default) or a GPU: VAAPI (Intel/AMD), Intel Quick Sync, or NVIDIA NVENC. The GPU has to be passed through to the Dispatcharr container (`/dev/dri` for Intel/AMD, the NVIDIA container runtime for NVIDIA). Sync tests the GPU and falls back to software encoding, with a warning, if it doesn't work. Status shows which one is in use. |
 | Server Port | Local port for the channel streams (default 5980, bound to 127.0.0.1). Sync checks the port first and changes nothing if something else is using it. |
 
 ## Actions
 
-- **Sync Stations** matches channels to the list and starts the server.
-- **Validate** writes a full report to `/data/rad_streams/logs/validate.log`. The pop-up shows a short summary.
+- **Sync Stations** (background, with progress) checks the table, matches channels to it and starts the server.
+- **Validate** (background, with progress) checks each stream, its track titles, the city and the photos. Stations are
+  checked eight at a time, and the time allowed grows with the list (45 seconds per eight stations, up to 15 minutes).
+- Both save a full report to `/data/rad_streams/reports/` (`sync-<date>-<time>.txt`, `validate-<date>-<time>.txt`;
+  the newest 20 of each are kept, readable only by Dispatcharr's user). The latest is also in `logs/sync.log` and
+  `logs/validate.log`. The pop-up shows a short summary, and Dispatcharr's task history keeps the result with every
+  station's details as a downloadable JSON file.
+- Pressing Sync, Validate or Remove while the same kind of run is still going says so instead of starting a second one.
+- After Sync and Remove, Dispatcharr's plugin page refreshes itself, and open pages reload their channel and guide lists.
 - **Status** shows whether the server is running and who's watching.
 - **Stop Server** disconnects viewers and stops the server. Sync starts it again.
 - **Remove All Channels** stops the server and deletes every channel the plugin created.
@@ -126,6 +145,7 @@ Files, all under `/data/rad_streams/`:
 - `service.json` is the config written by Sync. `status.json` is the server status. `channels.json` maps stations to channels.
 - `cache/images/<city>/` holds 20 photos per city. Every 12 hours up to half of them are swapped for new ones, and dropped photos are deleted. Once a day the server also deletes cities no station has played for 30 days, old splash images and leftover temporary files, so the cache doesn't grow. `cache/geocode/` holds city lookups. `cache/splash-*.png` is the splash, drawn once per resolution.
 - `logs/rad_streams.log` (rotating), `logs/ffmpeg-<station>.log`, `logs/validate.log`, `logs/sync.log`.
+- `reports/` holds the last 20 Sync and 20 Validate reports.
 
 ## Troubleshooting
 
@@ -134,7 +154,7 @@ Files, all under `/data/rad_streams/`:
 - **Use the "Proxy" stream profile** (Sync picks it automatically). An ffmpeg-based profile can read a real-time source as "buffering" and try to switch streams.
 - **No track titles:** some stations don't send ICY metadata. Validate says so.
 - **CPU:** a 1080p station uses roughly half of one CPU core while someone is watching, and nothing otherwise. GPU encoding (Video Encoding setting) takes the H.264 encode off the CPU; drawing the frames and blending them up to 25 fps still use the CPU. The CPU Use setting's Low choice cuts the software encoder's share by about a third.
-- **Guide empty, or the Rad Streams EPG missing from the EPG manager:** reload the Dispatcharr page. Since v0.5.1 Sync tells open pages to reload their EPG lists, but an older Dispatcharr may not listen for that.
+- **Guide empty, or the Rad Streams EPG missing from the EPG manager:** reload the Dispatcharr page. Since v0.5.1 Sync tells open pages to reload their EPG lists (and since v0.6.0 their channel lists), but an older Dispatcharr may not listen for that.
 - **GPU encoding not used:** Sync's message and `logs/rad_streams.log` give the reason, such as "Cannot load libcuda.so.1" (the NVIDIA runtime isn't set up for the container) or "no /dev/dri render device" (pass `/dev/dri` through). If a GPU passes Sync's test but an encode then fails as a station starts (some NVIDIA cards limit how many run at once), that station restarts with software encoding and Status says so until the next Sync.
 - **After a Dispatcharr database reset or restore:** press Sync. Rad Streams only updates or deletes channels it can recognise as its own, so it creates fresh ones and leaves any others alone.
 
@@ -159,7 +179,9 @@ Dispatcharr's channel models.
 
 - `plugin.py`, `plugin.json`: Dispatcharr plugin (settings, actions, service lifecycle)
 - `rs/channels.py`: channel/stream sync, guide entries and logos
+- `rs/config.py`: the stations table and old text format, cell checks, render settings
 - `rs/validate.py`: Validate checks
+- `rs/reports.py`: saved Sync and Validate reports
 - `rs/service.py`: the background process
 - `rs/server.py`: on-demand HTTP server
 - `rs/station.py`: one station's renderer, paced in real time
