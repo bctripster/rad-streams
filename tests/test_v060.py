@@ -414,3 +414,48 @@ def test_clip_keeps_the_tail():
     msg = plugin_mod.Plugin._clip("x" * 400, tail=" Report: /data/r.txt")
     assert len(msg) == 280 and msg.endswith(" Report: /data/r.txt") and "…" in msg
     assert plugin_mod.Plugin._clip("short") == "short"
+
+
+# ---- John's real station list (2026-11-24) ------------------------------------
+def test_johns_station_list_moves_into_the_table_exactly():
+    """A real list, typed by hand: a missing space before a pipe (K106.3), a tab
+    before a URL (100.3 the Q), .pls and .m3u8 links, themes and numbers 2000-2018."""
+    text = (ROOT / "tests" / "fixtures" / "johns_stations.txt").read_text(encoding="utf-8")
+    assert "K106.3| http" in text and "| \thttps://stream.jpbgdigital" in text   # quirks kept
+    m = rows_from_text(text)
+    assert not m.notes and len(m.rows) == 19
+    assert [r["number"] for r in m.rows] == [str(n) for n in range(2000, 2019)]
+    by_name = {r["name"]: r for r in m.rows}
+    assert by_name["K106.3"]["url"] == "http://live.leanstream.co/CHKSFM"
+    assert by_name["100.3 the Q"]["url"] == "https://stream.jpbgdigital.com/CKKQ/HEAAC/48k/playlist.m3u8"
+    assert by_name["Deep Space One"]["url"] == "https://somafm.com/deepspaceone130.pls"
+    assert by_name["Groove Salad"]["city"] == "Theme: Mountains"
+    assert not any(r["skip"] or r["id"] or r["logo"] for r in m.rows)
+    # every cell is clean text, with nothing left over from the tab or the pipes
+    for r in m.rows:
+        for col in ("name", "url", "city", "number"):
+            assert r[col] == r[col].strip() and "|" not in r[col] and "\t" not in r[col]
+
+    # The table gives the same 19 stations, with the same ids (so the same
+    # channels) and numbers, as the text box did in v0.5.3.
+    old, new = parse_stations(text), parse_rows(m.rows)
+    assert not old.errors and not new.errors, (old.errors, new.errors)
+    assert len(new.stations) == 19
+    assert [(s.station_id, s.name, s.stream_url, s.city, s.channel_number) for s in new.stations] == \
+        [(s.station_id, s.name, s.stream_url, s.city, s.channel_number) for s in old.stations]
+
+    # and Dispatcharr's settings form opens with them already in the table
+    fields = plugin_mod.Plugin().get_fields({"settings": {"stations": text}})
+    table = next(f for f in fields if f["id"] == "station_table")
+    assert table["default"] == m.rows
+
+
+def test_johns_station_list_syncs_to_19_channels(quiet_server):
+    p, models = quiet_server
+    text = (ROOT / "tests" / "fixtures" / "johns_stations.txt").read_text(encoding="utf-8")
+    rows = plugin_mod.Plugin().get_fields({"settings": {"stations": text}})
+    rows = next(f for f in rows if f["id"] == "station_table")["default"]
+    r = p.run("sync", {}, {"settings": {"stations": text, "station_table": rows}})
+    assert r["status"] == "ok", r
+    numbers = sorted(c.channel_number for c in models.Channel.objects.all())
+    assert numbers == list(range(2000, 2019))
