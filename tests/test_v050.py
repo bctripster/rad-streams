@@ -206,7 +206,9 @@ def test_encoder_args_per_choice(monkeypatch):
     for name, codec in (("nvenc", "h264_nvenc"), ("qsv", "h264_qsv"), ("software", "libx264")):
         cmd = encoder.build_command(1280, 720, 4, 25, 3000, 128, 5, "-", video_encoder=name)
         assert cmd[cmd.index("-c:v") + 1] == codec
-        assert cmd[cmd.index("-g") + 1] == "50" and cmd[cmd.index("-b:v") + 1] == "3000k"
+        assert cmd[cmd.index("-g") + 1] == "50" and cmd[cmd.index("-maxrate") + 1] == "3000k"
+        # GPU encoders aim for the bitrate; software aims for a quality, capped at the bitrate.
+        assert ("-crf" in cmd) == (name == "software") and ("-b:v" in cmd) == (name != "software")
     # VAAPI with no render node falls back to the software arguments
     monkeypatch.setattr(encoder, "render_device", lambda: None)
     cmd = encoder.build_command(1280, 720, 4, 25, 3000, 128, 5, "-", video_encoder="vaapi")

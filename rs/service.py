@@ -106,6 +106,8 @@ class Service:
         except Exception as exc:
             log.warning("ignoring bad config update: %s", exc)
             return
+        # Sync asks for a fresh GPU test, in case a GPU that failed earlier works again.
+        encoder.forget()
         if (opts["host"], opts["port"]) != (self.server.host, self.server.port):
             # A new port needs a new listener; restart the whole server.
             log.info("port changed to %s:%s; restarting server", opts["host"], opts["port"])
@@ -119,8 +121,7 @@ class Service:
             self.server.stop()
             self.server = new
         else:
-            self.server.linger = opts["linger_seconds"]
-            self.server.update(stations, settings)
+            self.server.update(stations, settings, linger_seconds=opts["linger_seconds"])
         self._prewarm_splash(settings)
         self._prewarm_encoder(settings)
         log.info("config reloaded: %d stations", len(stations))

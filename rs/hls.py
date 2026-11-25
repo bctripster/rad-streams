@@ -6,7 +6,8 @@ the playlist (``#EXTINF:...,title="...",artist="..."`` as Triton/StreamTheWorld
 and others send) or in the segment's ID3 tag (packed AAC). The caller feeds
 the bytes to the same ffmpeg decoder used for Icecast streams.
 
-Not supported: encrypted (#EXT-X-KEY) and fMP4 (#EXT-X-MAP) streams.
+Not supported: encrypted (#EXT-X-KEY), fMP4 (#EXT-X-MAP) and byte-range
+(#EXT-X-BYTERANGE) streams.
 """
 from __future__ import annotations
 
@@ -50,11 +51,26 @@ class Segment:
 @dataclass
 class Playlist:
     variants: list[tuple[int, str]] = field(default_factory=list)   # (bandwidth, url)
+    audio_variants: list[tuple[int, str]] = field(default_factory=list)   # the ones without video
     segments: list[Segment] = field(default_factory=list)
     target: float = 6.0
     ended: bool = False
     encrypted: bool = False
     fmp4: bool = False
+    byterange: bool = False
+
+
+# Codec names that mean a variant carries video (H.264, HEVC, VP9, AV1, Dolby Vision).
+_VIDEO_CODEC = re.compile(r"\b(avc[13]|hvc1|hev1|vp0?9|av01|dvh[1e])", re.I)
+
+
+def _is_audio_only(stream_inf: str) -> bool:
+    """True when an #EXT-X-STREAM-INF line describes a variant with no video."""
+    if "RESOLUTION=" in stream_inf.upper():
+        return False
+    m = re.search(r'CODECS="([^"]*)"', stream_inf, re.I)
+    # No CODECS and no RESOLUTION: nothing says it has video (the usual radio case).
+    return not (m and _VIDEO_CODEC.search(m.group(1)))
 
 
 _ATTR = re.compile(r'([A-Za-z_-]+)\s*=\s*"((?:[^"\\]|\\.)*)"')
@@ -83,6 +99,7 @@ def parse_playlist(text: str, base: str) -> Playlist:
         raise ValueError("not an HLS playlist")
     seq = 0
     pending_dur, pending_title, pending_bw = None, None, None
+    pending_audio = False
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
@@ -90,6 +107,7 @@ def parse_playlist(text: str, base: str) -> Playlist:
         if line.startswith("#EXT-X-STREAM-INF"):
             m = re.search(r"BANDWIDTH=(\d+)", line)
             pending_bw = int(m.group(1)) if m else 0
+            pending_audio = _is_audio_only(line)
         elif line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
             seq = int(line.split(":", 1)[1])
         elif line.startswith("#EXT-X-TARGETDURATION:"):
@@ -100,6 +118,8 @@ def parse_playlist(text: str, base: str) -> Playlist:
             pl.encrypted = True
         elif line.startswith("#EXT-X-MAP"):
             pl.fmp4 = True
+        elif line.startswith("#EXT-X-BYTERANGE"):
+            pl.byterange = True
         elif line.startswith("#EXTINF:"):
             info = line[len("#EXTINF:"):]
             try:
@@ -111,6 +131,8 @@ def parse_playlist(text: str, base: str) -> Playlist:
             url = urljoin(base, line)
             if pending_bw is not None:
                 pl.variants.append((pending_bw, url))
+                if pending_audio:
+                    pl.audio_variants.append((pending_bw, url))
                 pending_bw = None
             else:
                 pl.segments.append(Segment(seq, url, pending_dur or pl.target, pending_title))
@@ -174,8 +196,8 @@ class HlsError(Exception):
 
 
 def _get_text(url: str) -> tuple[str, str]:
-    r = net.session().get(url, timeout=(8, 10))
-    r.raise_for_status()
+    # Capped: a URL ending .m3u8 that is really a live stream would never end.
+    r = net.fetch_limited(url, net.MAX_HLS_PLAYLIST_BYTES, timeout=(8, 10), deadline=20.0)
     return r.text, r.url
 
 
@@ -189,9 +211,15 @@ def open_media_playlist(url: str) -> tuple[str, Playlist]:
                 raise HlsError("encrypted HLS streams are not supported")
             if pl.fmp4:
                 raise HlsError("fMP4 HLS streams are not supported")
+            if pl.byterange:
+                # Each "segment" is a slice of one big file; fetching by URL would
+                # download the whole file again for every slice.
+                raise HlsError("byte-range HLS streams are not supported")
             return final, pl
-        # Audio-only radio: the highest bandwidth variant is still small.
-        url = max(pl.variants)[1]
+        # Prefer a variant without video, so a station that also offers a video
+        # feed doesn't have us downloading it. Among those, the highest
+        # bandwidth is still small for audio.
+        url = max(pl.audio_variants or pl.variants)[1]
     raise HlsError("too many nested HLS playlists")
 
 
@@ -244,13 +272,17 @@ def _get_segment(url: str, stop: threading.Event, tries: int = 3) -> Optional[by
     """Fetch one segment, retrying briefly. None if it can't be had."""
     for attempt in range(tries):
         try:
-            r = net.session().get(url, timeout=(8, 20))
+            r = net.fetch_limited(url, net.MAX_SEGMENT_BYTES, timeout=(8, 20), deadline=60.0,
+                                  ok_statuses=(404, 410))
             if r.status_code in (404, 410):
                 log.warning("HLS segment missing (%s): %s", r.status_code, url)
                 return None
-            r.raise_for_status()
             return r.content
-        except requests.RequestException as exc:
+        except net.TooLarge as exc:
+            # Not worth retrying: it would be just as large the second time.
+            log.warning("HLS segment skipped (%s): %s", exc, url)
+            return None
+        except (requests.RequestException, TimeoutError) as exc:
             log.warning("HLS segment fetch failed (%s): %s", exc, url)
             if attempt == tries - 1 or stop.wait(1.0 + attempt):
                 return None

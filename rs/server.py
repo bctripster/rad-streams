@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
 
 from .config import RenderSettings, Station
+from .encoder import FFMPEG_LOG_MAX, rotate_log
 from .station import StationRunner
 
 log = logging.getLogger("rad_streams.server")
@@ -33,18 +34,11 @@ RESTART_BACKOFF = 3.0
 RunnerFactory = Callable[[Station, RenderSettings], StationRunner]
 
 
-FFMPEG_LOG_MAX = 2 * 1024 * 1024
-
-
 def default_runner_factory(station: Station, settings: RenderSettings) -> StationRunner:
     import os
     os.makedirs(settings.log_dir, exist_ok=True)
     log_path = os.path.join(settings.log_dir, f"ffmpeg-{station.station_id}.log")
-    try:  # keep one previous log per station
-        if os.path.getsize(log_path) > FFMPEG_LOG_MAX:
-            os.replace(log_path, log_path + ".1")
-    except OSError:
-        pass
+    rotate_log(log_path, FFMPEG_LOG_MAX)   # keep one previous log per station
     return StationRunner(station, settings, "-", log_path=log_path)
 
 
@@ -246,9 +240,12 @@ class RadioServer:
         self._stop = threading.Event()
 
     # ---- config --------------------------------------------------------
-    def update(self, stations: list[Station], settings: Optional[RenderSettings] = None) -> None:
+    def update(self, stations: list[Station], settings: Optional[RenderSettings] = None,
+               linger_seconds: Optional[float] = None) -> None:
         """Apply a new station list. Changed or removed stations stop."""
         settings = settings or self.settings
+        if linger_seconds is not None:
+            self.linger = linger_seconds
         settings_changed = settings != self.settings
         self.settings = settings
         new = {s.station_id: s for s in stations}
@@ -262,6 +259,8 @@ class RadioServer:
                         b.station.stream_url, b.station.city, b.station.name):
                     stale.append(b)
                     self.broadcasts[sid] = Broadcast(s, settings, self.factory, self.linger)
+                else:
+                    b.linger = self.linger     # stations that carry on pick up a new linger time
             for sid, s in new.items():
                 if sid not in self.broadcasts:
                     self.broadcasts[sid] = Broadcast(s, settings, self.factory, self.linger)

@@ -382,7 +382,9 @@ def _usable_size(path: str) -> bool:
             w, h = im.size
     except (OSError, ValueError):
         return False
-    return w >= MIN_WIDTH and h > 0 and NASA_MIN_ASPECT <= w / h <= MAX_ASPECT
+    # The pixel limit keeps a huge original from needing hundreds of MB to decode.
+    return (w >= MIN_WIDTH and h > 0 and w * h <= nasa.MAX_PIXELS
+            and NASA_MIN_ASPECT <= w / h <= MAX_ASPECT)
 
 
 def _dir_lock(path: str) -> threading.Lock:
@@ -415,6 +417,8 @@ class ImageLibrary:
         self.refresh_seconds = refresh_hours * 3600
         self._lock = _dir_lock(self.dir)
         self.last_error: Optional[str] = None
+        # The parsed index and the file identity it was read from (see _index).
+        self._index_cache: Optional[tuple[tuple, dict]] = None
 
     def touch(self) -> None:
         """Record that a station is using this city (the cleanup removes unused ones)."""
@@ -425,7 +429,26 @@ class ImageLibrary:
 
     # ---- reading -------------------------------------------------------
     def _index(self) -> dict:
-        return net.read_json(self.index_path) or {}
+        """The photo index, re-read only when the file on disk has changed.
+
+        A running station asks every few seconds; the file changes a few times
+        a day. Every rewrite is an atomic replace, which gives a new inode, so
+        (inode, size, mtime) identifies one version of the file.
+        """
+        try:
+            st = os.stat(self.index_path)
+        except OSError:
+            self._index_cache = None
+            return {}
+        stamp = (st.st_ino, st.st_size, st.st_mtime_ns)
+        cached = self._index_cache
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        data = net.read_json(self.index_path)
+        if not isinstance(data, dict):
+            data = {}
+        self._index_cache = (stamp, data)
+        return data
 
     def photos(self) -> list[Photo]:
         out = []
@@ -526,24 +549,25 @@ class ImageLibrary:
         threading.Thread(target=run, name=f"rs-images-{self.city_name}", daemon=True).start()
 
     def _download(self, url: str, path: str) -> None:
-        r = net.session().get(url, timeout=net.TIMEOUT, stream=True)
-        r.raise_for_status()
         tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.part"
         size = 0
-        try:
-            with open(tmp, "wb") as f:
-                for chunk in r.iter_content(65536):
-                    size += len(chunk)
-                    if size > MAX_DOWNLOAD_BYTES:
-                        raise ValueError("image too large")
-                    f.write(chunk)
-            os.replace(tmp, path)
-        except BaseException:
+        # The ``with`` block closes the connection on every path, including errors.
+        with net.session().get(url, timeout=net.TIMEOUT, stream=True) as r:
+            r.raise_for_status()
             try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(65536):
+                        size += len(chunk)
+                        if size > MAX_DOWNLOAD_BYTES:
+                            raise ValueError("image too large")
+                        f.write(chunk)
+                os.replace(tmp, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
 
     def _prune(self, keep: Iterable[str]) -> None:
         keep = set(keep)

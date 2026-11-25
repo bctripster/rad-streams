@@ -36,5 +36,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install Python packages
         run: python -m pip install -r requirements-dev.txt
+      - name: Lint the plugin code
+        # Syntax errors, undefined names and unused imports only.
+        run: python -m ruff check --select E9,F plugin.py rs
       - name: Run tests
         run: python -m pytest -q tests
