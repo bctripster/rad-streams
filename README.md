@@ -13,7 +13,14 @@ space or nature, without the city and weather.
 ## Install
 
 1. Copy the `rad_streams` folder to `/app/data/plugins/rad_streams/` in your Dispatcharr container.
-2. In Dispatcharr, open **Plugins**, reload if needed, and enable **Rad Streams**.
+2. In Dispatcharr, open **Plugins**, reload if needed, and enable **Rad Streams**. Dispatcharr 0.34 or newer
+   is required. When you enable it (or install an update that adds one), Dispatcharr lists the access the plugin
+   asks for; approve all five:
+   - **Run host processes** (`subprocess`): the stream server and FFmpeg.
+   - **Listen for network connections** (`network_listener`): the server on 127.0.0.1 (Dispatcharr asks for a restart the first time).
+   - **Access external network services** (`outbound_network`): radio streams, photos, weather and Validate.
+   - **Write outside plugin storage** (`filesystem_write`): its files in `/data/rad_streams/` and the logo in `/data/logos/`.
+   - **Run a persistent background service** (`persistent_service`): relaunches the server after Dispatcharr restarts.
 3. Enter your stations in the **Stations** box, one per line:
 
    ```

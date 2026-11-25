@@ -75,7 +75,6 @@ def test_duplicate_ids_are_skipped():
 
 def test_service_config_round_trips_id_and_logo(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin_mod, "_data_dir", lambda: tmp_path / "data")
-    monkeypatch.setattr(plugin_mod.Plugin, "_schedule_autostart", lambda self: None)
     p = plugin_mod.Plugin()
     sts = stations("New | http://a/s | Austin | 3 | id=Old | logo=https://x/l.png")
     p._write_service_config(sts, RenderSettings(video_encoder="nvenc"), 5980, desired=False)
@@ -178,7 +177,6 @@ def test_logos_default_and_per_station(tmp_path):
 
 
 def test_plugin_copies_the_bundled_logo_only_under_data(tmp_path, monkeypatch):
-    monkeypatch.setattr(plugin_mod.Plugin, "_schedule_autostart", lambda self: None)
     monkeypatch.setattr(plugin_mod, "_data_dir", lambda: tmp_path / "data")
     assert plugin_mod.Plugin()._default_logo() is None   # Dispatcharr can't serve it from here
 
@@ -239,7 +237,6 @@ def test_probe_reports_a_missing_ffmpeg():
 
 def test_plugin_validates_the_encoder_setting(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin_mod, "_data_dir", lambda: tmp_path / "data")
-    monkeypatch.setattr(plugin_mod.Plugin, "_schedule_autostart", lambda self: None)
     p = plugin_mod.Plugin()
     assert p._render_settings({"video_encoder": "nvenc"}).video_encoder == "nvenc"
     assert p._render_settings({"video_encoder": "rm -rf /"}).video_encoder == "software"
@@ -274,7 +271,6 @@ def test_sync_tells_open_pages_to_reload_epg_lists(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "core", core)
     monkeypatch.setitem(sys.modules, "core.utils", utils)
     monkeypatch.setattr(plugin_mod, "_data_dir", lambda: tmp_path / "data")
-    monkeypatch.setattr(plugin_mod.Plugin, "_schedule_autostart", lambda self: None)
     models = make_models()
     monkeypatch.setattr(plugin_mod.Plugin, "_models", staticmethod(lambda: models))
     p = plugin_mod.Plugin()

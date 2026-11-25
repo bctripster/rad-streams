@@ -145,7 +145,6 @@ def test_h2_fetch_limited_has_an_overall_deadline(endless_server):
 @pytest.fixture
 def plugin(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin_mod, "_data_dir", lambda: tmp_path / "data")
-    monkeypatch.setattr(plugin_mod.Plugin, "_schedule_autostart", lambda self: None)
     models = make_models()
     monkeypatch.setattr(plugin_mod.Plugin, "_models", staticmethod(lambda: models))
     p = plugin_mod.Plugin()
@@ -429,7 +428,6 @@ def test_l9_linger_change_reaches_existing_stations(tmp_path):
 
 # ---- O1 / O2: the CPU Use setting and quality-based rate control --------------
 def test_o1_cpu_use_setting(monkeypatch):
-    monkeypatch.setattr(plugin_mod.Plugin, "_schedule_autostart", lambda self: None)
     p = plugin_mod.Plugin()
     normal, low = p._render_settings({}), p._render_settings({"cpu_mode": "low"})
     assert (normal.output_fps, normal.x264_preset) == (25, "veryfast")
