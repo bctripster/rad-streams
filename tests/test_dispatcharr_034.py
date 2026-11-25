@@ -37,6 +37,7 @@ OLD_CAPS = ["subprocess", "persistent_service", "network_listener"]   # v0.5.2
 def test_manifest_declares_every_capability_the_plugin_uses():
     assert MANIFEST["manifest_version"] == 2
     assert set(MANIFEST["capabilities"]) == {
+        "background_tasks",     # Sync and Validate are async actions (v0.6.0)
         "filesystem_write",     # /data/rad_streams state + /data/logos logo
         "network_listener",     # port check binds 127.0.0.1; the server listens
         "outbound_network",     # Validate fetches streams; downloads in-process
@@ -239,7 +240,8 @@ def test_downloads_in_the_plugin_thread_need_outbound_network(sandboxed):
 
 
 @needs_dispatcharr
-def test_every_action_runs_with_the_declared_capabilities(sandboxed, tmp_path):
+@pytest.mark.parametrize("layout", ["table", "old text"])
+def test_every_action_runs_with_the_declared_capabilities(sandboxed, tmp_path, layout):
     from fakes import FakeIcyServer, make_tone_mp3
     p, as_plugin = sandboxed(MANIFEST["capabilities"])
     icy = FakeIcyServer(make_tone_mp3(str(tmp_path / "t.mp3")), ["A - B"])
@@ -248,16 +250,79 @@ def test_every_action_runs_with_the_declared_capabilities(sandboxed, tmp_path):
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()
-    settings = {"stations": f"Test FM | {icy.url} | Theme: Space", "port": port,
-                "resolution": "854x480", "video_kbps": 800}
+    settings = {"port": port, "resolution": "854x480", "video_kbps": 800}
+    if layout == "table":     # v0.6.0
+        settings["station_table"] = [{"name": "Test FM", "url": icy.url, "city": "Theme: Space"}]
+    else:                     # a setup saved before v0.6.0
+        settings["stations"] = f"Test FM | {icy.url} | Theme: Space"
+    progress = []
     results = {}
     with as_plugin():
         for action in ("validate", "sync", "status", "stop_server", "remove_channels"):
-            results[action] = p.run(action, {}, {"settings": settings})
+            results[action] = p.run(action, {}, {
+                "settings": settings,
+                "report_progress": lambda pct, msg: progress.append(pct)})
         p.stop({"reason": "disable"})
     for action, r in results.items():
         assert "requires the" not in r["message"], (action, r)
-        assert r["status"] in ("ok", "warning"), (action, r)
+        assert r["status"] in ("ok", "partial"), (action, r)
     assert "server started" in results["sync"]["message"]
     log = (tmp_path / "data" / "logs" / "validate.log").read_text()
     assert "requires the" not in log
+    # the saved reports and the progress bar work inside the sandbox too
+    assert len(list((tmp_path / "data" / "reports").glob("*.txt"))) == 2
+    assert progress and max(progress) <= 99
+
+
+# ---- the settings form, checked by Dispatcharr's own code (v0.6.0) ----------
+def _dispatcharr_form_checks():
+    """Dispatcharr's field serializer and its table save check, or None.
+
+    Needs DISPATCHARR_SRC plus Django and Django REST framework installed
+    (they aren't in requirements-dev.txt, so CI skips this).
+    """
+    if not (DSP and (Path(DSP) / "apps" / "plugins" / "serializers.py").is_file()):
+        return None
+    try:
+        import django
+        from django.conf import settings as dj
+        import rest_framework  # noqa: F401
+    except ImportError:
+        return None
+    import ast
+    if not dj.configured:
+        dj.configure(INSTALLED_APPS=[], USE_I18N=False)
+        django.setup()
+    pkg = Path(DSP) / "apps" / "plugins"
+    fv = types.ModuleType("_dsp_field_versions")
+    exec(compile((pkg / "field_versions.py").read_text(), "field_versions.py", "exec"), fv.__dict__)
+    src = (pkg / "serializers.py").read_text()
+    src = src.replace("from .field_versions import", "from _dsp_field_versions import")
+    src = src.replace("from .models import PluginRepo", "PluginRepo = None")
+    src = src[: src.index("class PluginRepoSerializer")]   # needs a real model
+    sys.modules["_dsp_field_versions"] = fv
+    ser = types.ModuleType("_dsp_serializers")
+    exec(compile(src, "serializers.py", "exec"), ser.__dict__)
+    tree = ast.parse((pkg / "loader.py").read_text())
+    fn = next(n for c in ast.walk(tree) if isinstance(c, ast.ClassDef) for n in c.body
+              if isinstance(n, ast.FunctionDef) and n.name == "_validate_table_value")
+    ns = {"Dict": dict, "Any": object}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "loader.py", "exec"), ns)
+    return ser.PluginFieldSerializer, lambda field, value: ns["_validate_table_value"](None, field, value)
+
+
+def test_dispatcharr_accepts_the_form_and_the_migrated_table():
+    checks = _dispatcharr_form_checks()
+    if checks is None:
+        pytest.skip("needs DISPATCHARR_SRC, Django and djangorestframework")
+    serializer, validate_table = checks
+    old = "KEXP | https://k/x | Seattle | 501\n# KCRW | https://c/x | Santa Monica\nbroken line"
+    for fields in (MANIFEST["fields"], plugin_mod.Plugin().get_fields({"settings": {"stations": old}})):
+        s = serializer(data=fields, many=True)
+        assert s.is_valid(), s.errors
+        out = [dict(f) for f in s.validated_data]
+        assert [f["id"] for f in out] == [f["id"] for f in fields]   # nothing dropped
+        table = next(f for f in out if f["id"] == "station_table")
+        validate_table(table, table.get("default"))   # Save with the table untouched
+        validate_table(table, [{}, {"name": "A", "number": "", "skip": False}])   # new row, cleared #
+        assert next(f for f in out if f["type"] == "section")["collapsed"] is True

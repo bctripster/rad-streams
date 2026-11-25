@@ -1,0 +1,19 @@
+Rock 101 CFMI | http://live.leanstream.co/CFMIFM-MP3 | Vancouver, BC | 2000
+CFOX 99.3 | http://live.leanstream.co/CFOXFM-MP3 | Vancouver, BC | 2001
+CJAY 92 | https://playerservices.streamtheworld.com/api/livestream-redirect/CJAYFM_ADP.m3u8 | Calgary, AB | 2002
+Jack 96.9 | https://rogers-hls.leanstream.co/rogers/cal969.stream/playlist.m3u8 | Calgary, AB | 2003
+The Edge CFGQ | http://live.leanstream.co/CFGQFM-MP3 | Calgary, AB | 2004
+K97 CIRK | http://newcap.leanstream.co/CIRKFM | Edmonton, AB | 2005
+Q107 CILQ | http://live.leanstream.co/CILQFM | Toronto, ON | 2006
+Q104.3 | https://stream.revma.ihrhls.com/zc1465 | New York, NY | 2007
+K106.3| http://live.leanstream.co/CHKSFM | Sarnia, ON | 2008
+KROQ | http://live.amperwave.net/direct/audacy-kroqfmaac-imc | Los Angeles, CA | 2009
+100.3 the Q | 	https://stream.jpbgdigital.com/CKKQ/HEAAC/48k/playlist.m3u8 | Victoria, BC | 2010
+Z98.9 Red Deer | http://newcap.leanstream.co/CIZZFM | Red Deer, AB | 2011
+102.1 The Edge | http://live.leanstream.co/CFNYFM | Toronto, ON | 2012
+Radio X London | http://media-the.musicradio.com/RadioXLondonMP3 | London, UK | 2013
+Ambient Sleeping Pill | http://radio.stereoscenic.com/asp-h | Theme: Space | 2014
+Deep Space One | https://somafm.com/deepspaceone130.pls | Theme: Space | 2015
+Rockit! | http://stream.radioparadise.com/rock-320 | Paradise, CA | 2016
+Groove Salad | https://somafm.com/groovesalad130.pls | Theme: Mountains | 2017
+CBC Radio 1 | https://cbcradiolive.akamaized.net/hls/live/2041039/ES_R1MCG/master.m3u8 | Calgary, AB | 2018

@@ -112,13 +112,25 @@ def test_plugin_sync_starts_service_and_serves(plugin, tmp_path):
     p, models = plugin
     icy = FakeIcyServer(make_tone_mp3(str(tmp_path / "t.mp3")), ["A - B"])
     port = free_port()
-    settings = {"stations": f"Test FM | {icy.url} | Nowhere Special\nbad line", "port": port,
-                "resolution": "854x480", "units": "C", "video_kbps": 800}
+    # v0.6.0: a stations table, and a row with an empty cell is refused before
+    # anything changes; a Skip row is left out.
+    bad = {"station_table": [{"name": "Test FM", "url": icy.url, "city": "Nowhere Special"},
+                             {"name": "Broken", "url": "", "city": "Austin"}],
+           "port": port, "resolution": "854x480", "units": "C", "video_kbps": 800}
+    settings = dict(bad, station_table=[bad["station_table"][0],
+                                        dict(bad["station_table"][1], skip=True)])
     try:
+        r = p.run("sync", {}, {"settings": bad})
+        assert r["status"] == "error" and "Nothing was changed" in r["message"], r
+        assert "row 2 (Broken), Stream URL" in r["message"] and len(r["message"]) <= 280
+        assert models.Channel.objects.all().count() == 0
+        assert not (tmp_path / "data" / "service.json").exists()
+
         r = p.run("sync", {}, {"settings": settings})
         assert r["status"] == "ok", r
         assert "1 created" in r["message"] and "server started" in r["message"]
-        assert "warning" in r["message"] and len(r["message"]) <= 280
+        assert r["_dispatcharr"] == {"refresh": "ui"} and r["channels"]["skipped"] == 1
+        assert open(r["report"]).read().startswith("Rad Streams Sync")
         cfg = json.loads((tmp_path / "data" / "service.json").read_text())
         assert cfg["render"]["units"] == "C" and cfg["port"] == port
 
@@ -165,4 +177,5 @@ def test_plugin_sync_starts_service_and_serves(plugin, tmp_path):
 def test_plugin_sync_rejects_empty(plugin):
     p, _ = plugin
     r = p.run("sync", {}, {"settings": {"stations": "nonsense"}})
-    assert r["status"] == "error" and "No valid stations" in r["message"]
+    assert r["status"] == "error" and "Nothing was changed" in r["message"]
+    assert "line 1: expected" in r["message"]

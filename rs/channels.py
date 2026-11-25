@@ -259,8 +259,13 @@ class ChannelSync:
         return current_id is None or (last_set_id is not None and current_id == last_set_id)
 
     # ---- main ------------------------------------------------------------
-    def sync(self, stations: list[Station], url_for) -> SyncResult:
-        """``url_for(station)`` gives the station's route on the local server."""
+    def sync(self, stations: list[Station], url_for, progress=None) -> SyncResult:
+        """``url_for(station)`` gives the station's route on the local server.
+
+        ``progress(done, total, name)``, when given, is called after each
+        station's channel is checked, for Dispatcharr's progress bar. An error
+        in it is ignored: a progress bar never fails a Sync.
+        """
         res = SyncResult()
         self._logos = {}          # Logo rows looked up during this Sync, by URL
         mapping = self._mapping()
@@ -269,7 +274,7 @@ class ChannelSync:
         new_mapping: dict = {}
 
         try:
-            self._sync(stations, url_for, mapping, group, wanted, new_mapping, res)
+            self._sync(stations, url_for, mapping, group, wanted, new_mapping, res, progress)
         finally:
             # Even after a failure part way, record what exists, so the next Sync
             # updates those channels instead of creating duplicates.
@@ -279,7 +284,8 @@ class ChannelSync:
             net.write_json(self.mapping_path, new_mapping)
         return res
 
-    def _sync(self, stations, url_for, mapping, group, wanted, new_mapping, res) -> None:
+    def _sync(self, stations, url_for, mapping, group, wanted, new_mapping, res,
+              progress=None) -> None:
         self._undeleted: set = set()
         guide = self._guide(res)
         # Removals first, so their channel numbers are free for new stations.
@@ -301,97 +307,106 @@ class ChannelSync:
             else:
                 res.removed.append(entry.get("name", sid))
 
-        for st in stations:
-            url = url_for(st)
-            entry = mapping.get(st.station_id, {})
-            # A saved id is used only if the row is still ours (see _owned); otherwise
-            # the station gets a fresh channel and the other row is left untouched.
-            stream = self._owned(self.m.Stream, entry.get("stream_id")) or \
-                self.m.Stream.objects.filter(url=url).first()
-            channel = self._owned(self.m.Channel, entry.get("channel_id"), group)
-            if channel is None and stream is not None:
-                channel = self._channel_for(stream)   # mapping lost: find the channel through its stream
-            changed = False
-            is_new = channel is None
+        for done, st in enumerate(stations, start=1):
+            self._one(st, url_for, mapping, group, guide, new_mapping, res)
+            if progress is not None:
+                try:
+                    progress(done, len(stations), st.name)
+                except Exception:
+                    pass
 
-            want_name = stream_name(st)
-            if stream is None:
-                stream = self.m.Stream.objects.create(
-                    name=want_name, url=url, is_custom=True,
-                    channel_group=group, stream_profile_id=self._profile())
+    def _one(self, st, url_for, mapping, group, guide, new_mapping, res) -> None:
+        """Create or update one station's stream and channel."""
+        url = url_for(st)
+        entry = mapping.get(st.station_id, {})
+        # A saved id is used only if the row is still ours (see _owned); otherwise
+        # the station gets a fresh channel and the other row is left untouched.
+        stream = self._owned(self.m.Stream, entry.get("stream_id")) or \
+            self.m.Stream.objects.filter(url=url).first()
+        channel = self._owned(self.m.Channel, entry.get("channel_id"), group)
+        if channel is None and stream is not None:
+            channel = self._channel_for(stream)   # mapping lost: find the channel through its stream
+        changed = False
+        is_new = channel is None
+
+        want_name = stream_name(st)
+        if stream is None:
+            stream = self.m.Stream.objects.create(
+                name=want_name, url=url, is_custom=True,
+                channel_group=group, stream_profile_id=self._profile())
+            changed = True
+        else:
+            fields = []
+            if stream.name != want_name:
+                stream.name = want_name
+                fields.append("name")
+            if stream.url != url:
+                stream.url = url
+                fields.append("url")
+            if fields:
+                stream.save(update_fields=fields)
                 changed = True
-            else:
-                fields = []
-                if stream.name != want_name:
-                    stream.name = want_name
-                    fields.append("name")
-                if stream.url != url:
-                    stream.url = url
-                    fields.append("url")
-                if fields:
-                    stream.save(update_fields=fields)
-                    changed = True
 
-            number = st.channel_number
-            if number is not None:
-                clash = self._number_taken(number, channel.id if channel else None)
-                if clash is not None:
-                    res.warnings.append(f"{st.name}: channel {number:g} is taken by "
-                                        f"'{clash.name}', using another number")
-                    number = None
+        number = st.channel_number
+        if number is not None:
+            clash = self._number_taken(number, channel.id if channel else None)
+            if clash is not None:
+                res.warnings.append(f"{st.name}: channel {number:g} is taken by "
+                                    f"'{clash.name}', using another number")
+                number = None
 
-            logo = self._logo(st, res)
-            if channel is None:
-                if number is None:
-                    number = self.m.Channel.get_next_available_channel_number(
-                        starting_from=AUTO_NUMBER_FROM)
-                extra = {}
-                if logo is not None:
-                    extra["logo"] = logo
-                if guide is not None:
-                    extra["epg_data"] = guide
-                channel = self.m.Channel.objects.create(
-                    name=st.name, channel_number=number, channel_group=group,
-                    stream_profile_id=self._profile(), **extra)
+        logo = self._logo(st, res)
+        if channel is None:
+            if number is None:
+                number = self.m.Channel.get_next_available_channel_number(
+                    starting_from=AUTO_NUMBER_FROM)
+            extra = {}
+            if logo is not None:
+                extra["logo"] = logo
+            if guide is not None:
+                extra["epg_data"] = guide
+            channel = self.m.Channel.objects.create(
+                name=st.name, channel_number=number, channel_group=group,
+                stream_profile_id=self._profile(), **extra)
+            changed = True
+        else:
+            fields = []
+            if channel.name != st.name:
+                channel.name = st.name
+                fields.append("name")
+            if number is not None and channel.channel_number != number:
+                channel.channel_number = number
+                fields.append("channel_number")
+            if getattr(channel, "channel_group_id", None) != group.id:
+                channel.channel_group = group
+                fields.append("channel_group")
+            have_logo = getattr(channel, "logo_id", None)
+            if (logo is not None and have_logo != logo.id
+                    and self._managed(have_logo, entry.get("logo_id"))):
+                channel.logo = logo
+                fields.append("logo")
+            have_epg = getattr(channel, "epg_data_id", None)
+            if (guide is not None and have_epg != guide.id
+                    and self._managed(have_epg, entry.get("epg_data_id"))):
+                channel.epg_data = guide
+                fields.append("epg_data")
+            if fields:
+                channel.save(update_fields=fields)
                 changed = True
-            else:
-                fields = []
-                if channel.name != st.name:
-                    channel.name = st.name
-                    fields.append("name")
-                if number is not None and channel.channel_number != number:
-                    channel.channel_number = number
-                    fields.append("channel_number")
-                if getattr(channel, "channel_group_id", None) != group.id:
-                    channel.channel_group = group
-                    fields.append("channel_group")
-                have_logo = getattr(channel, "logo_id", None)
-                if (logo is not None and have_logo != logo.id
-                        and self._managed(have_logo, entry.get("logo_id"))):
-                    channel.logo = logo
-                    fields.append("logo")
-                have_epg = getattr(channel, "epg_data_id", None)
-                if (guide is not None and have_epg != guide.id
-                        and self._managed(have_epg, entry.get("epg_data_id"))):
-                    channel.epg_data = guide
-                    fields.append("epg_data")
-                if fields:
-                    channel.save(update_fields=fields)
-                    changed = True
 
-            _, linked = self.m.ChannelStream.objects.get_or_create(
-                channel=channel, stream=stream, defaults={"order": 0})
-            changed = changed or linked
+        _, linked = self.m.ChannelStream.objects.get_or_create(
+            channel=channel, stream=stream, defaults={"order": 0})
+        changed = changed or linked
 
-            new_entry = {"channel_id": channel.id, "stream_id": stream.id, "name": st.name}
-            # Remember what Sync set, so a later Sync can tell it from a hand-picked one.
-            for key, obj, attr in (("logo_id", logo, "logo_id"), ("epg_data_id", guide, "epg_data_id")):
-                if obj is not None and getattr(channel, attr, None) == obj.id:
-                    new_entry[key] = obj.id
-                elif entry.get(key) is not None and getattr(channel, attr, None) == entry.get(key):
-                    new_entry[key] = entry[key]
-            new_mapping[st.station_id] = new_entry
-            (res.created if is_new else res.updated if changed else res.unchanged).append(st.name)
+        new_entry = {"channel_id": channel.id, "stream_id": stream.id, "name": st.name}
+        # Remember what Sync set, so a later Sync can tell it from a hand-picked one.
+        for key, obj, attr in (("logo_id", logo, "logo_id"), ("epg_data_id", guide, "epg_data_id")):
+            if obj is not None and getattr(channel, attr, None) == obj.id:
+                new_entry[key] = obj.id
+            elif entry.get(key) is not None and getattr(channel, attr, None) == entry.get(key):
+                new_entry[key] = entry[key]
+        new_mapping[st.station_id] = new_entry
+        (res.created if is_new else res.updated if changed else res.unchanged).append(st.name)
 
     def _channel_for(self, stream) -> Optional[Any]:
         try:
