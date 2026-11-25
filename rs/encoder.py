@@ -32,6 +32,12 @@ PROBE_FRAMES = 5
 # after starting counts as that, and the software encoder takes over.
 EARLY_EXIT_SECONDS = 15.0
 SOFTWARE_CRF = 23           # libx264 quality target; the bitrate setting caps it
+# VAAPI rate control. Some Intel drivers (older iGPUs such as the UHD 630) accept
+# only constant QP and reject a bitrate ("Driver does not support CBR RC mode").
+# The mode is tested once per process; CBR is tried first because it keeps to
+# the bitrate setting.
+VAAPI_CQP = 28
+VAAPI_RATE_MODES = ("cbr", "cqp")
 FFMPEG_LOG_MAX = 2 * 1024 * 1024
 
 
@@ -63,22 +69,30 @@ def render_device() -> Optional[str]:
     return nodes[0] if nodes else None
 
 
-def video_args(encoder: str, video_kbps: int, gop: int,
-               preset: str = "veryfast") -> tuple[list[str], str, list[str]]:
+def video_args(encoder: str, video_kbps: int, gop: int, preset: str = "veryfast",
+               rate_mode: Optional[str] = None) -> tuple[list[str], str, list[str]]:
     """``(global args, pixel-format filter, codec args)`` for one video encoder.
 
     The global args go before the inputs (a VAAPI device has to be opened
     first); the filter is appended to the frame-rate filter. An unknown or
     unusable name gives the software encoder. ``preset`` is the libx264 speed
-    preset (software only).
+    preset (software only). ``rate_mode`` ("cbr" or "cqp") is VAAPI's rate
+    control; None uses the mode found by the last test (CBR if not tested).
     """
     rate = ["-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k",
             "-bufsize", f"{video_kbps * 2}k", "-g", str(gop)]
     if encoder == "vaapi":
         device = render_device()
         if device:
-            # Frames are uploaded to the GPU as NV12 and encoded there.
-            return (["-vaapi_device", device], "format=nv12,hwupload",
+            mode = rate_mode or vaapi_rate_mode()
+            if mode == "cqp":
+                rate = ["-rc_mode", "CQP", "-qp", str(VAAPI_CQP), "-g", str(gop)]
+            # Frames are uploaded to the GPU as NV12 and encoded there. The
+            # RGB->NV12 conversion stays on the CPU (not every driver can scale
+            # or convert on the GPU), and ffmpeg's default multi-threaded filter
+            # graph made that conversion cost several times the CPU: one filter
+            # thread is enough for it.
+            return (["-vaapi_device", device, "-filter_threads", "1"], "format=nv12,hwupload",
                     ["-c:v", "h264_vaapi", *rate, "-bf", "0"])
     if encoder == "qsv":
         return ([], "format=nv12",
@@ -89,27 +103,54 @@ def video_args(encoder: str, video_kbps: int, gop: int,
     if preset not in X264_PRESETS:
         preset = "veryfast"
     # Quality-based with the bitrate as a ceiling: a still photo then uses only
-    # what it needs, instead of always spending the whole bitrate.
+    # what it needs, instead of always spending the whole bitrate. No
+    # "-tune zerolatency": it turns off lookahead and mbtree, and with a tight
+    # buffer that starved each keyframe of detail (a starfield visibly went soft
+    # every 2 s and sharpened again). The 4x buffer lets a keyframe borrow bits.
+    # B-frames stay off so latency stays low.
     quality = ["-crf", str(SOFTWARE_CRF), "-maxrate", f"{video_kbps}k",
-               "-bufsize", f"{video_kbps * 2}k", "-g", str(gop)]
+               "-bufsize", f"{video_kbps * 4}k", "-g", str(gop)]
     return ([], "format=yuv420p",
-            ["-c:v", "libx264", "-preset", preset, "-tune", "zerolatency", *quality,
+            ["-c:v", "libx264", "-preset", preset, *quality, "-bf", "0",
              "-keyint_min", str(gop), "-sc_threshold", "0"])
 
 
-def probe(encoder: str, ffmpeg: str = "ffmpeg", timeout: float = PROBE_TIMEOUT) -> Optional[str]:
-    """Encode a few black frames with ``encoder``. Returns None if that works,
-    else a short reason. Uses raw frames on stdin, so it needs no lavfi."""
-    if encoder == "vaapi" and not render_device():
-        return "no /dev/dri render device (pass the GPU through to the container)"
+def describe(encoder: str, video_kbps: Optional[int] = None, ffmpeg: str = "ffmpeg") -> str:
+    """A short label for logs, e.g. "VAAPI (CQP 28)" or "software (CRF 23, max 3000k)"."""
+    label = ENCODER_LABELS.get(encoder, encoder)
+    cap = f"{video_kbps}k" if video_kbps else "bitrate setting"
+    if encoder == "vaapi" and render_device():
+        if vaapi_rate_mode(ffmpeg) == "cqp":
+            return f"VAAPI (CQP {VAAPI_CQP})"
+        return f"VAAPI (CBR {cap})"
+    if encoder in ("qsv", "nvenc"):
+        return f"{label} (CBR {cap})"
+    return f"software (CRF {SOFTWARE_CRF}, max {cap})"
+
+
+_vaapi_modes: dict = {}       # ffmpeg path -> the rate mode that passed the test
+
+
+def vaapi_rate_mode(ffmpeg: str = "ffmpeg") -> str:
+    """The VAAPI rate mode the last test found ("cbr" if none has run yet)."""
+    return _vaapi_modes.get(ffmpeg, "cbr")
+
+
+def _test_encode(encoder: str, ffmpeg: str, timeout: float, frames: int,
+                 rate_mode: Optional[str] = None) -> Optional[str]:
+    """Encode ``frames`` black frames with exactly the options a stream would use.
+
+    Returns None if that works, else a short reason. Uses raw frames on stdin,
+    so it needs no lavfi.
+    """
     w, h = PROBE_SIZE
-    pre, fmt, codec = video_args(encoder, 1000, 10)
+    pre, fmt, codec = video_args(encoder, 1000, 10, rate_mode=rate_mode)
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *pre,
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-framerate", "5",
-           "-i", "pipe:0", "-frames:v", str(PROBE_FRAMES), "-vf", fmt, *codec, "-f", "null", "-"]
+           "-i", "pipe:0", "-frames:v", str(frames), "-vf", fmt, *codec, "-f", "null", "-"]
     try:
         # -nostdin only stops ffmpeg reading keys; the frames still come through pipe:0.
-        proc = subprocess.run(cmd, input=bytes(w * h * 3 * PROBE_FRAMES),
+        proc = subprocess.run(cmd, input=bytes(w * h * 3 * frames),
                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=timeout)
     except FileNotFoundError:
         return "ffmpeg not found"
@@ -125,6 +166,32 @@ def probe(encoder: str, ffmpeg: str = "ffmpeg", timeout: float = PROBE_TIMEOUT) 
              for l in proc.stderr.decode("utf-8", "replace").splitlines()]
     lines = [l for l in lines if l]
     return lines[0][:200] if lines else f"ffmpeg exited with code {proc.returncode}"
+
+
+def probe(encoder: str, ffmpeg: str = "ffmpeg", timeout: float = PROBE_TIMEOUT) -> Optional[str]:
+    """Test ``encoder`` with the options a stream will use. Returns None if it
+    works, else a short reason.
+
+    VAAPI tries each rate mode in turn (a one-frame encode each) and remembers
+    the first that works, so a driver that only does constant QP still passes
+    and the stream then uses constant QP too.
+    """
+    if encoder == "vaapi":
+        if not render_device():
+            return "no /dev/dri render device (pass the GPU through to the container)"
+        reasons = []
+        for mode in VAAPI_RATE_MODES:
+            reason = _test_encode(encoder, ffmpeg, timeout, 1, rate_mode=mode)
+            if reason is None:
+                _vaapi_modes[ffmpeg] = mode
+                return None
+            reasons.append(reason)
+            if reason in ("ffmpeg not found", "the test encode timed out"):
+                break                 # another rate mode won't help
+        # The first mode's error usually names the real cause (no driver, no
+        # permission); a CQP-only driver never gets here.
+        return reasons[0]
+    return _test_encode(encoder, ffmpeg, timeout, PROBE_FRAMES)
 
 
 def cached(encoder: str, ffmpeg: str = "ffmpeg") -> Optional[tuple[str, Optional[str]]]:
@@ -158,7 +225,7 @@ def resolve(encoder: str, ffmpeg: str = "ffmpeg") -> tuple[str, Optional[str]]:
                 log.warning("%s encoding unavailable (%s); using software encoding",
                             ENCODER_LABELS.get(encoder, encoder), reason)
             else:
-                log.info("using %s for video encoding", ENCODER_LABELS.get(encoder, encoder))
+                log.info("encoder: %s", describe(encoder, ffmpeg=ffmpeg))
             _resolved[key] = reason
         reason = _resolved[key]
     return ("software", reason) if reason else (encoder, None)
@@ -178,6 +245,7 @@ def forget() -> None:
     """Drop every remembered test result, so each GPU encoder is tested again (on Sync)."""
     with _resolve_lock:
         _resolved.clear()
+        _vaapi_modes.clear()
 
 
 def build_command(width: int, height: int, render_fps: float, output_fps: int, video_kbps: int,
@@ -190,7 +258,8 @@ def build_command(width: int, height: int, render_fps: float, output_fps: int, v
     # into smooth crossfades; fps= only repeats frames.
     vf = (f"framerate=fps={output_fps}:interp_start=0:interp_end=255:scene=100"
           if smooth else f"fps={output_fps}")
-    pre, fmt, codec = video_args(video_encoder, video_kbps, gop, x264_preset)
+    pre, fmt, codec = video_args(video_encoder, video_kbps, gop, x264_preset,
+                                 rate_mode=vaapi_rate_mode(ffmpeg))
     cmd = [
         ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", *pre,
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
@@ -245,6 +314,8 @@ class Encoder:
         # threaded process like Dispatcharr's).
         cmd = build_command(self.width, self.height, audio_fd=audio_r, output=out_arg, **self.args)
         stderr = open(self.log_path, "ab") if self.log_path else subprocess.DEVNULL
+        log.info("encoder: %s", describe(self.args["video_encoder"], self.args["video_kbps"],
+                                              self.args["ffmpeg"]))
         log.debug("ffmpeg: %s", " ".join(cmd))
         try:
             self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=stdout, stderr=stderr,

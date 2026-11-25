@@ -445,7 +445,7 @@ def test_o1_cpu_use_setting(monkeypatch):
 def test_o2_software_encoding_is_quality_based_with_a_cap():
     cmd = encoder.build_command(1280, 720, 4, 25, 3000, 128, 5, "-")
     assert cmd[cmd.index("-crf") + 1] == str(encoder.SOFTWARE_CRF)
-    assert cmd[cmd.index("-maxrate") + 1] == "3000k" and cmd[cmd.index("-bufsize") + 1] == "6000k"
+    assert cmd[cmd.index("-maxrate") + 1] == "3000k" and cmd[cmd.index("-bufsize") + 1] == "12000k"   # 4x: room for keyframes
     assert "-b:v" not in cmd
 
 
