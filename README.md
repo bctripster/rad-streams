@@ -99,7 +99,7 @@ The **Advanced** section, collapsed until you open it, holds the rest:
 | --- | --- |
 | Resolution | 480p up to 4K. Default 1080p. |
 | Video Bitrate | Upper limit per station. With software encoding the picture is encoded to a quality level, so still photos use less than the limit. |
-| Video Encoding | Software (default) or a GPU: VAAPI (Intel/AMD), Intel Quick Sync, or NVIDIA NVENC. The GPU has to be passed through to the Dispatcharr container (`/dev/dri` for Intel/AMD, the NVIDIA container runtime for NVIDIA). Sync tests the GPU and falls back to software encoding, with a warning, if it doesn't work. Status shows which one is in use. |
+| Video Encoding | Software (default) or a GPU: VAAPI (Intel/AMD), Intel Quick Sync, or NVIDIA NVENC. The GPU has to be passed through to the Dispatcharr container (`/dev/dri` for Intel/AMD, the NVIDIA container runtime for NVIDIA). Sync tests the GPU and falls back to software encoding, with a warning, if it doesn't work. Status shows which one is in use. For VAAPI the container also needs `/dev/dri` and its user in the `video` and `render` groups. Older Intel iGPUs (such as the UHD 630) only support constant quality with VAAPI, so the Video Bitrate limit doesn't apply there: the bitrate follows the picture, about 4-5 Mbps at peak on a dense starfield at 1080p25. `logs/rad_streams.log` shows the mode, e.g. `encoder: VAAPI (CQP 28)`. |
 | Server Port | Local port for the channel streams (default 5980, bound to 127.0.0.1). Sync checks the port first and changes nothing if something else is using it. |
 
 ## Actions
@@ -155,6 +155,7 @@ Files, all under `/data/rad_streams/`:
 - **No track titles:** some stations don't send ICY metadata. Validate says so.
 - **CPU:** a 1080p station uses roughly half of one CPU core while someone is watching, and nothing otherwise. GPU encoding (Video Encoding setting) takes the H.264 encode off the CPU; drawing the frames and blending them up to 25 fps still use the CPU. The CPU Use setting's Low choice cuts the software encoder's share by about a third.
 - **Guide empty, or the Rad Streams EPG missing from the EPG manager:** reload the Dispatcharr page. Since v0.5.1 Sync tells open pages to reload their EPG lists (and since v0.6.0 their channel lists), but an older Dispatcharr may not listen for that.
+- **Detail "pulses" every 2 seconds** (fine backgrounds such as starfields go soft at each keyframe, then sharpen): fixed in v0.6.1 for software encoding, which now uses x264's lookahead and a larger buffer instead of `-tune zerolatency`. VAAPI on an older Intel iGPU encodes every frame at the same quality and doesn't pulse.
 - **GPU encoding not used:** Sync's message and `logs/rad_streams.log` give the reason, such as "Cannot load libcuda.so.1" (the NVIDIA runtime isn't set up for the container) or "no /dev/dri render device" (pass `/dev/dri` through). If a GPU passes Sync's test but an encode then fails as a station starts (some NVIDIA cards limit how many run at once), that station restarts with software encoding and Status says so until the next Sync.
 - **After a Dispatcharr database reset or restore:** press Sync. Rad Streams only updates or deletes channels it can recognise as its own, so it creates fresh ones and leaves any others alone.
 

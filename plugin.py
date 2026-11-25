@@ -111,7 +111,7 @@ class _Report:
 
 class Plugin:
     name = "Rad Streams"
-    version = "0.6.0"
+    version = "0.6.1"
     description = ("Internet radio stations as TV channels: photos of each station's city, "
                    "the current track and local weather, with the station playing underneath.")
 
