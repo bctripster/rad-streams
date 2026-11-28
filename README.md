@@ -128,6 +128,16 @@ station's renderer:
 2. Pillow draws frames at about 4 fps: a crossfading photo, a dim text panel (station, city, track, and the weather, labelled as the station's city), and the photo credit.
 3. A second ffmpeg encodes the frames and audio to H.264/AAC MPEG-TS, blending frames up to 25 fps.
 
+Each new viewer connection first gets about 1 MB of MPEG-TS null packets, which
+players discard. Dispatcharr's proxy waits for about 1 MB of a stream before it
+sends anything to a viewer, and a still-picture channel (especially with VAAPI,
+which ignores the bitrate setting on older Intel GPUs) can take 8 seconds or more
+to produce that much. The null packets fill that buffer at once. The proxy also
+only forwards whole ~256 KB chunks, so for the first 6 seconds each viewer's
+stream is topped up with more null packets to about 4 Mbit/s; after that
+nothing is added. Together these get the first real frames to the player in
+about a second instead of 8+ (since v0.6.2), for about 4 MB extra per tune-in.
+
 Audio and video are paced against one clock. If the station drops, the
 renderer reconnects with backoff and plays silence meanwhile, and the panel
 says "Reconnecting to stream…". Blank or generic titles ("Unknown", ads, the
@@ -155,6 +165,8 @@ Files, all under `/data/rad_streams/`:
 - **No track titles:** some stations don't send ICY metadata. Validate says so.
 - **CPU:** a 1080p station uses roughly half of one CPU core while someone is watching, and nothing otherwise. GPU encoding (Video Encoding setting) takes the H.264 encode off the CPU; drawing the frames and blending them up to 25 fps still use the CPU. The CPU Use setting's Low choice cuts the software encoder's share by about a third.
 - **Guide empty, or the Rad Streams EPG missing from the EPG manager:** reload the Dispatcharr page. Since v0.5.1 Sync tells open pages to reload their EPG lists (and since v0.6.0 their channel lists), but an older Dispatcharr may not listen for that.
+- **Channel takes 8+ seconds to start** (most noticeable with VAAPI): fixed in v0.6.2 by the null-packet prelude described under How it works.
+- **Bitrate setting has no effect with VAAPI:** older Intel GPUs (e.g. UHD 630) only support constant-quality VAAPI encoding (`VAAPI (CQP 28)` in the log), so the stream size follows the picture, not the setting.
 - **Detail "pulses" every 2 seconds** (fine backgrounds such as starfields go soft at each keyframe, then sharpen): fixed in v0.6.1 for software encoding, which now uses x264's lookahead and a larger buffer instead of `-tune zerolatency`. VAAPI on an older Intel iGPU encodes every frame at the same quality and doesn't pulse.
 - **GPU encoding not used:** Sync's message and `logs/rad_streams.log` give the reason, such as "Cannot load libcuda.so.1" (the NVIDIA runtime isn't set up for the container) or "no /dev/dri render device" (pass `/dev/dri` through). If a GPU passes Sync's test but an encode then fails as a station starts (some NVIDIA cards limit how many run at once), that station restarts with software encoding and Status says so until the next Sync.
 - **After a Dispatcharr database reset or restore:** press Sync. Rad Streams only updates or deletes channels it can recognise as its own, so it creates fresh ones and leaves any others alone.
