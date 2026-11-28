@@ -27,6 +27,23 @@ log = logging.getLogger("rad_streams.server")
 
 TS_PACKET = 188
 READ_SIZE = TS_PACKET * 64          # ~12 KB per read from ffmpeg
+
+# Dispatcharr's TS proxy holds a new viewer back until it has buffered
+# INITIAL_BEHIND_CHUNKS (4) x BUFFER_CHUNK_SIZE (188*1361, ~256 KB), about
+# 1 MB. A still-image channel (VAAPI CQP on a static picture) produces only
+# ~1-2 Mbit/s, so filling that took 8-13 s. Each connection therefore starts
+# with ~1 MB of MPEG-TS null packets (PID 0x1FFF): every demuxer discards
+# them, Dispatcharr's buffer fills at once, and the live stream follows.
+NULL_TS_PACKET = b"\x47\x1f\xff\x10" + b"\xff" * (TS_PACKET - 4)
+STARTUP_PADDING_BYTES = TS_PACKET * 1361 * 4 + TS_PACKET * 256   # 4 proxy chunks + margin
+PADDING_WRITE = NULL_TS_PACKET * 349                             # ~64 KB per write
+# The proxy also only forwards whole ~256 KB chunks, so after the prelude the
+# first *real* chunk would still take seconds to fill at 1-2 Mbit/s. For the
+# first few seconds each viewer's stream is topped up with null packets to
+# about 4 Mbit/s (what software encoding used to produce), so real frames
+# reach the player within a second or so. Afterwards nothing is added.
+STARTUP_BOOST_SECONDS = 6.0
+STARTUP_BOOST_BYTES_PER_SEC = 512 * 1024
 CLIENT_QUEUE_CHUNKS = 400           # ~5 MB, ~13 s at 3 Mbps; slower clients are dropped
 DEFAULT_PORT = 5980
 RESTART_BACKOFF = 3.0
@@ -154,6 +171,7 @@ class Broadcast:
 
     def _pump(self, runner: StationRunner, gen: int) -> None:
         out = runner.stdout
+        carry = b""     # pushed chunks are whole TS packets, so viewers can insert null packets
         while True:
             try:
                 chunk = out.read(READ_SIZE)
@@ -161,6 +179,11 @@ class Broadcast:
                 chunk = b""
             if not chunk:
                 break
+            chunk = carry + chunk
+            cut = len(chunk) - len(chunk) % TS_PACKET
+            chunk, carry = chunk[:cut], chunk[cut:]
+            if not chunk:
+                continue
             self.bytes_out += len(chunk)
             with self._lock:
                 targets = list(self.clients)
@@ -228,8 +251,15 @@ class RadioServer:
 
     def __init__(self, stations: list[Station], settings: RenderSettings, *,
                  host: str = "127.0.0.1", port: int = DEFAULT_PORT, linger_seconds: float = 10.0,
-                 runner_factory: RunnerFactory = default_runner_factory):
+                 runner_factory: RunnerFactory = default_runner_factory,
+                 startup_padding_bytes: int = STARTUP_PADDING_BYTES,
+                 startup_boost_seconds: float = STARTUP_BOOST_SECONDS,
+                 startup_boost_bytes_per_sec: int = STARTUP_BOOST_BYTES_PER_SEC):
         self.settings = settings
+        # Whole null packets only, so the stream stays packet-aligned.
+        self.startup_padding_bytes = max(0, startup_padding_bytes) // TS_PACKET * TS_PACKET
+        self.startup_boost_seconds = max(0.0, startup_boost_seconds)
+        self.startup_boost_rate = max(0, startup_boost_bytes_per_sec)
         self.factory = runner_factory
         self.linger = linger_seconds
         self.host, self.port = host, port
@@ -324,19 +354,44 @@ class RadioServer:
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.flush()
+                # Null-packet prelude (see STARTUP_PADDING_BYTES), sent before
+                # attach(): the first viewer's attach() starts the renderer,
+                # which can take a moment, and the prelude must not wait for it.
+                try:
+                    left = server.startup_padding_bytes
+                    while left > 0 and not server._stop.is_set():
+                        piece = PADDING_WRITE[:min(left, len(PADDING_WRITE))]
+                        self.wfile.write(piece)
+                        left -= len(piece)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+                    return              # viewer gone before the stream started
                 client = b.attach(self.address_string())
                 if client is None:      # removed by a config reload just now
                     return
                 try:
+                    t0 = time.monotonic()
+                    sent = 0                        # bytes after the prelude, real + boost padding
+                    boost_end = t0 + (server.startup_boost_seconds if server.startup_boost_rate else 0)
                     while not server._stop.is_set():
+                        boosting = time.monotonic() < boost_end
                         try:
-                            chunk = client.q.get(timeout=1.0)
+                            chunk = client.q.get(timeout=0.1 if boosting else 1.0)
                         except queue.Empty:
-                            continue
+                            chunk = b""
                         if chunk is None:
                             break
-                        self.wfile.write(chunk)
+                        if chunk:
+                            self.wfile.write(chunk)
+                            sent += len(chunk)
+                        if boosting:
+                            # Top up to the boost rate between whole packets
+                            # (_pump only pushes whole packets).
+                            due = int(server.startup_boost_rate * (time.monotonic() - t0)) - sent
+                            due = min(due, len(PADDING_WRITE)) // TS_PACKET * TS_PACKET
+                            if due > 0:
+                                self.wfile.write(PADDING_WRITE[:due])
+                                sent += due
                 except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
                     pass
                 finally:
